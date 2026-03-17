@@ -6,8 +6,10 @@ import {
   updateSessionStatus, getGoalsBySession, getWPsByGoal,
   getSnapshotsByGoal, getAttemptsByGoal, getSessionById,
   getGoalById, updateGoalStatus, updateSessionGoal, getGoalBySeq,
+  updateGoalCloseout,
 } from '../../core/storage/supervisor-repository.js';
 import { countWPsByStatus } from '../../core/supervisor/scheduler.js';
+import { buildCloseoutSummary } from '../../core/supervisor/closeout.js';
 import { loadConfig } from '../../core/config/service.js';
 import { log } from '../../utils/logger.js';
 import type { Session, Goal } from '../../types/supervisor.js';
@@ -457,6 +459,87 @@ export function registerSessionCommand(program: Command): void {
         const wps = getWPsByGoal(db, activeGoal.id);
         const counts = countWPsByStatus(wps);
         console.log(`  Continuing goal: ${activeGoal.title} (${counts.completed || 0}/${wps.length} WPs done)`);
+      }
+    });
+
+  // cdx session switch <name>
+  sessionCmd
+    .command('switch <name>')
+    .description('Switch to another session')
+    .action(async (name: string) => {
+      const db = getDb();
+
+      const target = getSessionByName(db, name);
+      if (!target) {
+        log.error(`Session "${name}" not found.`);
+        process.exit(1);
+      }
+
+      if (target.status === 'completed' || target.status === 'abandoned') {
+        log.error(`Session "${name}" is ${target.status}. Use "cdx session start ${name}" to reactivate.`);
+        process.exit(1);
+      }
+
+      const current = resolveSession(db);
+      if (current && current.id !== target.id) {
+        pauseCurrentSession(db, current);
+        console.log(`⏸ Paused session: ${current.name}`);
+      }
+
+      const prevStatus = target.status;
+      activateSession(db, target.id);
+      console.log(`▶ Switched to: ${target.name} (${prevStatus} → active)`);
+    });
+
+  // cdx session close
+  sessionCmd
+    .command('close')
+    .description('Close current session')
+    .action(async () => {
+      const db = getDb();
+      const session = resolveSession(db);
+      if (!session) {
+        console.log('No active session to close.');
+        return;
+      }
+
+      const goals = getGoalsBySession(db, session.id);
+      let abandonedCount = 0;
+      let completedCount = 0;
+
+      // Check completion BEFORE mutating goals
+      for (const goal of goals) {
+        if (goal.status === 'completed') {
+          completedCount++;
+        }
+      }
+      const allDone = goals.length > 0 && completedCount === goals.length;
+
+      // Now abandon unfinished goals
+      for (const goal of goals) {
+        if (isUnfinished(goal.status)) {
+          updateGoalStatus(db, goal.id, 'abandoned');
+          try {
+            const updatedGoal = getGoalById(db, goal.id)!;
+            const goalWPs = getWPsByGoal(db, goal.id);
+            const goalAttempts = getAttemptsByGoal(db, goal.id);
+            const goalSnapshots = getSnapshotsByGoal(db, goal.id);
+            const closeout = buildCloseoutSummary({ goal: updatedGoal, wps: goalWPs, attempts: goalAttempts, snapshots: goalSnapshots, totalCost: 0 });
+            updateGoalCloseout(db, goal.id, JSON.stringify(closeout));
+          } catch { /* best effort */ }
+          abandonedCount++;
+        }
+      }
+
+      const finalStatus = allDone ? 'completed' : 'abandoned';
+      updateSessionStatus(db, session.id, finalStatus as any);
+
+      console.log(`Session "${session.name}" closed.`);
+      if (completedCount > 0 || abandonedCount > 0) {
+        const parts: string[] = [];
+        if (completedCount > 0) parts.push(`${completedCount} completed`);
+        if (abandonedCount > 0) parts.push(`${abandonedCount} paused (→ abandoned)`);
+        console.log(`  Goals: ${parts.join(', ')}`);
       }
     });
 }

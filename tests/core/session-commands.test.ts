@@ -121,3 +121,64 @@ describe('session resume with name', () => {
     expect(getSessionById(db, s2.id)!.status).toBe('paused');
   });
 });
+
+function isUnfinished(status: string): boolean {
+  return status === 'created' || status === 'active' || status === 'paused';
+}
+
+describe('session switch', () => {
+  it('pauses current and activates target', () => {
+    const s1 = createSession(db, { name: 'proj-a', project_path: '/tmp', engine: 'claude' });
+    updateSessionStatus(db, s1.id, 'active');
+    const g1 = createGoal(db, { session_id: s1.id, title: 'G1', description: 'd' });
+    updateGoalStatus(db, g1.id, 'active');
+    updateSessionGoal(db, s1.id, g1.id);
+
+    const s2 = createSession(db, { name: 'proj-b', project_path: '/tmp', engine: 'claude' });
+    updateSessionStatus(db, s2.id, 'paused');
+
+    const current = getSessionById(db, s1.id)!;
+    pauseCurrentSession(db, current);
+    activateSession(db, s2.id);
+
+    expect(getSessionById(db, s1.id)!.status).toBe('paused');
+    expect(getGoalById(db, g1.id)!.status).toBe('paused');
+    expect(getSessionById(db, s2.id)!.status).toBe('active');
+  });
+});
+
+describe('session close', () => {
+  it('marks session completed if all goals done', () => {
+    const s = createSession(db, { name: 's', project_path: '/tmp', engine: 'claude' });
+    const g = createGoal(db, { session_id: s.id, title: 'G', description: 'd' });
+    updateGoalStatus(db, g.id, 'completed');
+
+    const goals = getGoalsBySession(db, s.id);
+    const allDone = goals.every(g => g.status === 'completed');
+    const finalStatus = allDone ? 'completed' : 'abandoned';
+    updateSessionStatus(db, s.id, finalStatus);
+
+    expect(getSessionById(db, s.id)!.status).toBe('completed');
+  });
+
+  it('marks session abandoned if unfinished goals exist', () => {
+    const s = createSession(db, { name: 's', project_path: '/tmp', engine: 'claude' });
+    const g1 = createGoal(db, { session_id: s.id, title: 'G1', description: 'd' });
+    updateGoalStatus(db, g1.id, 'completed');
+    const g2 = createGoal(db, { session_id: s.id, title: 'G2', description: 'd' });
+    updateGoalStatus(db, g2.id, 'paused');
+
+    const goals = getGoalsBySession(db, s.id);
+    for (const g of goals) {
+      if (isUnfinished(g.status)) {
+        updateGoalStatus(db, g.id, 'abandoned');
+      }
+    }
+    const updatedGoals = getGoalsBySession(db, s.id);
+    const allDone = updatedGoals.every(g => g.status === 'completed');
+    updateSessionStatus(db, s.id, allDone ? 'completed' : 'abandoned');
+
+    expect(getSessionById(db, s.id)!.status).toBe('abandoned');
+    expect(getGoalById(db, g2.id)!.status).toBe('abandoned');
+  });
+});
