@@ -2,35 +2,44 @@
 
 **Date:** 2026-03-17
 **Version:** 2026.3.17
-**Codebase:** ~1,700 lines source / ~1,200 lines tests / 114 test cases / 14 test files
+**Codebase:** ~5,150 lines source / ~3,320 lines tests / 224 test cases / 21 test files
 
 ---
 
 ## 1. Executive Summary
 
 **What is working:**
-- CLI surface fully wired: 6 commands + 3 config subcommands, all callable
-- Task intake, classification, and persistence work correctly
-- Prompt template system works for all 4 task types x 2 engines (8 templates)
-- SQLite persistence for tasks, runs, logs, heartbeats, reports — all functional
-- Config service at ~/.conductor/config.json — functional
-- Heartbeat tracks state transitions without spam
-- Process runner supports cwd propagation and stdin pipe
-- Stream parser extracts readable output from Claude's stream-json events
-- **Report generator produces task-type-aware structured reports** — uses markdown section parsing, semantic file classification, and sub-agent isolation
-- **Resume command builds curated context from best previous run** — two-layer architecture (context selection + prompt rendering), run linkage tracking
-- **Report display renders task-type-specific fields** — scan_review, debug_fix, implement_feature each show only relevant fields
-- CI/CD pipelines defined for GitHub Actions
-- 114 tests pass across 14 test files
+
+Supervisor Layer (new):
+- Session-first UX: session start/list/status/inspect/history
+- `cdx execute plan.md --until-done` — plan mode with WP decomposition
+- `cdx execute "task description" --until-done` — no-plan mode with evidence-based completion
+- Resume after interruption: Ctrl+C pauses session/goal, next `cdx execute --until-done` resumes
+- Goal lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
+- Auto-pause old goal when starting new task mid-session
+- Closeout summary per goal (files, decisions, blockers, next action)
+- Decision extraction from run reports
+- Prompt strategy escalation: normal → focused → surgical → recovery
+- Snapshot compaction between runs preserves full execution context
+
+Execution Layer (stable):
+- CLI surface: 10 commands + 3 config subcommands
+- Task intake, classification (Vietnamese + English), persistence
+- Prompt template system: 4 task types × 2 engines
+- SQLite persistence for all entities with auto-migrations
+- Claude stream-json adapter with real-time display
+- Heartbeat monitoring (state-tracked, no spam)
+- Task-type-aware structured report generation
+- Resume with curated context from best previous run
+- 224 tests pass across 21 test files
 
 **What is partially implemented:**
-- Log display: `cdx logs` shows raw JSON lines for Claude runs, not parsed human-readable text
+- `cdx logs` shows raw JSON lines for Claude runs (not parsed human-readable text)
+- Codex adapter untested with real engine
 
 **What is not working / risky:**
-- `cdx logs` displays raw stream-json lines — not useful for human inspection after the fact
-- No `runs show <runId>` command exists for inspecting run metadata directly
 - No way to filter tasks by status (`cdx tasks --status running`)
-- Codex adapter untested with real engine
+- Codex adapter unverified with actual engine
 
 ---
 
@@ -38,162 +47,185 @@
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `cdx run` | Working | Full orchestration with config fallbacks, streaming, diagnostics, task-type-aware report generation |
+| `cdx session start <name>` | Working | Creates or reactivates session. Supports --engine, --path. |
+| `cdx session list` | Working | Lists sessions with status filter. |
+| `cdx session status` / `cdx status` | Working | Shows session, active goal, WP progress, retries. |
+| `cdx session inspect` / `cdx inspect` | Working | Deep dive: goals, WPs, attempts, snapshots, closeout. |
+| `cdx session history` | Working | Goal history as reference. |
+| `cdx execute [source] --until-done` | Working | Plan mode, no-plan mode, resume. Auto-pause on task switch. |
+| `cdx run` | Working | Single-run orchestration (execution layer). |
+| `cdx resume <taskId>` | Working | Two-layer context selection + structured prompt. |
 | `cdx tasks` | Working | Lists all tasks. No status filter. |
-| `cdx logs <runId>` | Working (degraded) | Works but shows raw JSON for Claude runs. Short ID supported. |
-| `cdx report <runId>` | Working | Task-type-specific display (scan_review, debug_fix, implement_feature, generic). Null fields hidden. |
-| `cdx resume <taskId>` | Working | Two-layer architecture: best-run selection + typed context + structured prompt. Supports --task/--engine/--path overrides. Run linkage via resumed_from_run_id. |
-| `cdx set-path <path>` | Working | Validates path exists, saves to config |
-| `cdx get-path` | Working | Shows default path or hint |
-| `cdx clear-path` | Working | Removes default path |
-| `cdx runs show <runId>` | Missing | No way to inspect run metadata directly |
-| `cdx --version` | Working | Shows 2026.3.17 |
+| `cdx logs <runId>` | Working (degraded) | Shows raw JSON for Claude runs. |
+| `cdx report <runId>` | Working | Task-type-specific display with null suppression. |
+| `cdx runs show <runId>` | Working | Run metadata inspection. |
+| `cdx set-path / get-path / clear-path` | Working | Config management. |
 
 ---
 
-## 3. Core Pipeline Status
+## 3. Supervisor Layer
+
+### Sessions
+**Status: Working.** Session is the primary UX surface. `getActiveSession()` prefers active/created, falls back to paused (handles Ctrl+C interrupts). Session resolution: by name or most recent active.
+
+### Goals
+**Status: Working.** Goals are internal to the supervisor. Two source types:
+- `plan_file` — from plan.md, decomposed into multiple WPs
+- `inline_task` — from ad-hoc text, single WP with stricter completion
+
+Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned. Auto-pause when user starts new task while old goal is active.
+
+### Work Packages
+**Status: Working.** Scheduler picks next WP by seq order, skips completed/blocked. Retry budget (3 for plan, 2 for ad-hoc). Blocker tracking (hard/soft with detail).
+
+### Snapshots
+**Status: Working.** Compactor builds snapshots between runs capturing: completed/in-progress/remaining items, decisions, constraints, related files, blockers, next action. Decision extraction parses `## Decisions` sections and "decided to..." patterns from reports.
+
+### Execution Attempts
+**Status: Working.** Each run is tracked as an attempt with: prompt strategy, progress detection, files changed count, WP completion count, blocker info.
+
+### Progress Detection
+**Status: Working.** Two modes:
+- Plan mode: completion signal in report summary/final_output is sufficient
+- No-plan mode: completion signal + evidence required (files_changed, fix_applied, verification, or what_implemented)
+
+### Closeout Summary
+**Status: Working.** Generated at every terminal state (completed, failed, hard_blocked, abandoned). Structured JSON with: source, objective, final status, attempt/WP counts, files touched, key decisions, blockers, next recommended action, cost estimate.
+
+---
+
+## 4. Execution Layer
 
 ### Task Intake
-**Status: Working.** Task is created in SQLite with raw_input, workspace_path, engine. Classification via regex is functional for Vietnamese + English keywords. All 4 task types covered.
+**Status: Working.** Task classification via regex for Vietnamese + English keywords. All 4 task types covered (debug_fix, scan_review, implement_feature, verify_only).
 
 ### Prompt Generation
-**Status: Working.** Templates exist for all 4 types x 2 engines. Variable substitution works. Resume prompt built from curated context with task-type-specific continuation guidelines.
+**Status: Working.** Templates for all 4 types × 2 engines. Variable substitution. Resume prompt built from curated context.
 
 ### Engine Execution
-**Status: Working (Claude) / Untested (Codex).** Claude adapter uses `--print --output-format stream-json --verbose --dangerously-skip-permissions` with prompt piped via stdin. Process runner passes cwd correctly.
-
-### Log Streaming
-**Status: Working for terminal display, degraded for persistence retrieval.** During execution, stream-parser extracts human-readable text from JSON events and displays it. Raw JSON is persisted to DB. However, `cdx logs` displays the raw JSON — not the parsed version.
-
-### Heartbeat
-**Status: Working.** State-tracked transitions: alive → idle → suspected_stuck → recovered. Only emits on transitions (no spam). Configurable interval and threshold via config.
-
-### Persistence
-**Status: Working.** All 5 tables populated correctly. Foreign keys enforced. WAL mode enabled. Schema migrations run automatically (new report columns, resumed_from_run_id).
+**Status: Working (Claude) / Untested (Codex).** Claude adapter uses `--print --output-format stream-json --verbose --dangerously-skip-permissions`.
 
 ### Reporting
-**Status: Working.** Report generator (340 lines) uses:
-- **Log interpretation** — typed events (text, tool_use, tool_result, error, result)
-- **Sub-agent isolation** — position-based separation prevents sub-agent `[DONE]` results from contaminating summary/final_output
-- **Semantic file classification** — Edit/Write/NotebookEdit = changed, Read/Grep/Glob/Bash/Agent = inspected
-- **Markdown section parsing** — `extractSections()` + `findSection()` extract structured fields from `## Header` sections in the agent's final report block
-- **Task-type gating** — fields only populated when they match the task type (findings for scan_review, root_cause for debug_fix, what_implemented for implement_feature)
-- **Strict verification** — only concrete evidence accepted ("15 tests passed"), tables and vague mentions rejected
-- **No hallucination** — fields stay null unless the agent writes matching markdown sections
+**Status: Working.** Report generator uses log interpretation, sub-agent isolation, semantic file classification, markdown section parsing, and task-type gating.
 
 ### Resume
-**Status: Working.** Two-layer architecture:
-1. **Context selection** (`selectBestRun`) — picks best previous run by priority: completed+report > failed+report > any+report
-2. **Context building** (`buildResumeContext`) — extracts task-type-specific sections from the report, rates quality as full/partial/limited
-3. **Prompt rendering** (`renderResumePrompt`) — structured continuation prompt with workspace, original task, context sections, quality warning, new instruction, task-type-specific continuation guidelines
-4. **Run linkage** — `resumed_from_run_id` column traces resume chains
-
-### Report Display
-**Status: Working.** Task-type-specific rendering:
-- `scan_review` → Summary, Findings, Risks, Recommendations, Files Inspected
-- `debug_fix` → Summary, Root Cause, Fix Applied, Files Changed, Verification, Remaining Risks
-- `implement_feature` → Summary, What Was Implemented, Files Changed, Validation, Follow-up Notes
-- generic → Summary, Files Inspected, Files Changed, Verification
-
-Null fields hidden automatically.
+**Status: Working.** Two-layer architecture: best-run selection + typed context building + quality-rated prompt rendering. Run linkage via `resumed_from_run_id`.
 
 ---
 
-## 4. Readiness Assessment
+## 5. Readiness Assessment
 
 | Area | Status | Detail |
 |------|--------|--------|
-| Run command | Ready | Full pipeline wired with diagnostics, streaming, config fallbacks |
-| Engine execution | Ready (Claude) / Untested (Codex) | Claude adapter flags are correct. Codex adapter unverified. |
-| Log streaming (terminal) | Ready | Stream-parser extracts readable content during execution |
-| Log retrieval (after run) | Not ready | `cdx logs` shows raw JSON, not human-readable parsed text |
-| Reporting | Ready | Task-type-aware extraction with markdown parsing, no regex heuristics |
-| Report display | Ready | Task-type-specific rendering with null suppression |
-| Resume | Ready | Two-layer context selection + prompt rendering, quality-rated, run linkage |
-| Heartbeat | Ready | State-tracked, configurable, no spam |
-| Persistence | Ready | All entities persisted correctly, schema migrations automated |
-| Configuration | Ready | Default path, engine, heartbeat settings all functional |
+| Session management | Ready | Start, list, status, inspect, history — all working |
+| Plan execution | Ready | Parse → WPs → loop → snapshot → advance |
+| No-plan execution | Ready | Single WP with evidence-based completion |
+| Resume after interrupt | Ready | Ctrl+C pauses, next execute resumes seamlessly |
+| Task switching | Ready | Auto-pause old goal, inform user, activate new |
+| Goal lifecycle | Ready | All states covered with proper transitions |
+| Closeout summary | Ready | Generated at all terminal states |
+| Decision extraction | Ready | From report sections and text patterns |
+| Single-run execution | Ready | Full pipeline with diagnostics, streaming, reporting |
+| Engine execution | Ready (Claude) / Untested (Codex) | Claude adapter verified |
+| Log retrieval | Not ready | `cdx logs` shows raw JSON, not parsed text |
+| Reporting | Ready | Task-type-aware extraction, no hallucination |
+| Resume | Ready | Quality-rated context, run linkage |
+| Persistence | Ready | All entities, auto-migrations, WAL mode |
+| Configuration | Ready | Default path, engine, heartbeat settings |
 
 ---
 
-## 5. Recommended Development Order
+## 6. Recommended Development Order
 
 ### P0 — Fix remaining degraded functionality
 
 1. **Fix `cdx logs` to display parsed output for JSON log lines**
-   The same log-interpreter used during execution and report generation should be applied when displaying logs. Currently logs show raw JSON which is useless for debugging.
 
-### P1 — Add missing observability
+### P1 — Robustness
 
-2. **Add `cdx runs show <runId>` command**
-   Display run metadata: engine, command, args, cwd, pid, status, started_at, finished_at, exit_code, prompt length, resumed_from_run_id. Essential for debugging.
+2. **End-to-end validation with real engines** — Run full supervisor loop with Claude, verify WP advancement, snapshot quality, and closeout generation.
 
-3. **Add `cdx tasks --status <status>` filter**
-   Practical for managing multiple tasks.
+3. **Wrap multi-step DB operations in transactions** — Goal creation + WP creation should be atomic.
 
-### P2 — Robustness
+### P2 — Enhancements
 
-4. **Add `--dangerously-skip-permissions` acceptance check**
-   Before launching Claude, verify that the permission mode has been accepted. Fail with a clear message if not.
+4. **Add `cdx tasks --status <status>` filter**
 
-5. **Wrap multi-step DB operations in transactions**
-   Create task + create run + update status should be atomic.
+5. **Resume chain visualization** — Show resume history for a task across runs.
 
-### P3 — Enhancements
-
-6. **End-to-end validation with real engines**
-   Run `cdx run` with Claude, verify report extraction produces correct structured fields from actual output.
-
-7. **Resume chain visualization**
-   Show resume history for a task: original run → resumed run → resumed run, with context quality at each step.
+6. **Multi-goal execution** — Support executing multiple goals from a single plan file.
 
 ---
 
-## 6. Files / Modules
+## 7. Files / Modules
 
-| File | Lines | Role |
-|------|-------|------|
-| src/cli/index.ts | 24 | CLI entry point |
-| src/cli/commands/run.ts | 216 | Main orchestration |
-| src/cli/commands/resume.ts | 207 | Resume with curated context (two-layer architecture) |
-| src/cli/commands/tasks.ts | 21 | List tasks |
-| src/cli/commands/logs.ts | 62 | View run logs |
-| src/cli/commands/report.ts | 112 | Task-type-specific report display |
-| src/cli/commands/config.ts | 44 | Config commands |
-| src/core/config/service.ts | 37 | Config read/write |
-| src/core/engine/types.ts | 34 | Adapter interface + factory |
-| src/core/engine/claude.ts | 30 | Claude adapter |
-| src/core/engine/codex.ts | 29 | Codex adapter |
-| src/core/engine/stream-parser.ts | 14 | Wrapper for backward compat |
-| src/core/engine/log-interpreter.ts | 212 | Unified log parsing into typed events |
-| src/core/runner/process.ts | 74 | spawn wrapper |
-| src/core/heartbeat/monitor.ts | 72 | Heartbeat with state tracking |
-| src/core/task/normalizer.ts | 63 | Task classification |
-| src/core/prompt/builder.ts | 39 | Template loading + substitution |
-| src/core/report/generator.ts | 340 | Task-type-aware report extraction |
-| src/core/resume/context.ts | 187 | Best-run selection + typed context building |
-| src/core/resume/prompt.ts | 101 | Structured resume prompt rendering |
-| src/core/storage/schema.ts | 100 | SQL DDL + migrations |
-| src/core/storage/db.ts | 42 | SQLite singleton |
-| src/core/storage/repository.ts | 157 | All CRUD operations |
-| src/types/index.ts | 73 | Shared types |
-| src/utils/logger.ts | 10 | Timestamped logger |
-| src/utils/lookup.ts | 29 | Short ID prefix resolver |
-| tests/ (14 files) | ~1,200 | 114 test cases |
-| prompts/ (8 files) | ~90 | Prompt templates |
-| .github/workflows/ (2 files) | 59 | CI + Release pipelines |
+| File | Role |
+|------|------|
+| **CLI** | |
+| src/cli/index.ts | CLI entry point + command registration |
+| src/cli/commands/session.ts | Session management + display helpers |
+| src/cli/commands/execute.ts | Supervisor execution (plan + no-plan + resume) |
+| src/cli/commands/goal.ts | [Internal] Goal management |
+| src/cli/commands/run.ts | Single-run orchestration |
+| src/cli/commands/resume.ts | Resume with curated context |
+| src/cli/commands/tasks.ts | List tasks |
+| src/cli/commands/logs.ts | View run logs |
+| src/cli/commands/report.ts | Task-type-specific report display |
+| src/cli/commands/runs.ts | Run metadata inspection |
+| src/cli/commands/config.ts | Config commands |
+| **Supervisor** | |
+| src/core/supervisor/loop.ts | Main supervisor loop (until-done) |
+| src/core/supervisor/scheduler.ts | WP scheduling + status counting |
+| src/core/supervisor/plan-parser.ts | Markdown plan → WP decomposition |
+| src/core/supervisor/prompt-builder.ts | Supervisor prompt (plan + ad-hoc modes) |
+| src/core/supervisor/progress.ts | Evidence-based progress detection |
+| src/core/supervisor/compactor.ts | Snapshot builder + decision extraction |
+| src/core/supervisor/closeout.ts | Goal closeout summary generation |
+| **Storage** | |
+| src/core/storage/schema.ts | SQL DDL + migrations |
+| src/core/storage/db.ts | SQLite singleton (WAL mode) |
+| src/core/storage/repository.ts | Execution layer CRUD |
+| src/core/storage/supervisor-repository.ts | Supervisor layer CRUD |
+| **Engine** | |
+| src/core/engine/types.ts | Adapter interface + factory |
+| src/core/engine/claude.ts | Claude CLI adapter |
+| src/core/engine/codex.ts | Codex CLI adapter |
+| src/core/engine/stream-parser.ts | JSON event parser |
+| src/core/engine/log-interpreter.ts | Unified log parsing |
+| **Other Core** | |
+| src/core/config/service.ts | Config read/write |
+| src/core/task/normalizer.ts | Task classification |
+| src/core/prompt/builder.ts | Template loading + substitution |
+| src/core/runner/process.ts | spawn wrapper |
+| src/core/heartbeat/monitor.ts | Heartbeat monitoring |
+| src/core/report/generator.ts | Task-type-aware report extraction |
+| src/core/resume/context.ts | Best-run selection + typed context |
+| src/core/resume/prompt.ts | Resume prompt rendering |
+| **Types** | |
+| src/types/index.ts | Execution layer types |
+| src/types/supervisor.ts | Supervisor layer types |
+| **Tests** | |
+| tests/ (21 files) | 224 test cases |
+| prompts/ (8 files) | Prompt templates |
 
 ---
 
-## 7. What Changed Since Initial Build
+## 8. What Changed Since V1
 
-| Area | Before | After |
-|------|--------|-------|
-| Report generator | 76 lines, regex-based extraction on random text, all fields attempted for all task types | 340 lines, markdown section parsing, semantic file classification, sub-agent isolation, task-type gating, strict verification |
-| Report display | Single generic render showing all fields | 4 render paths (scan_review, debug_fix, implement_feature, generic), null suppression |
-| Resume command | Shallow context (report summary + last 20 raw log lines), no overrides | Two-layer architecture (context selection + prompt rendering), quality-rated, typed sections, --task/--engine/--path overrides, run linkage |
-| Resume context | None (inline in command) | Dedicated `context.ts` (187 lines): selectBestRun, buildResumeContext, quality determination |
-| Resume prompt | None (inline in command) | Dedicated `prompt.ts` (101 lines): renderResumePrompt with task-type-specific continuation guidelines |
-| Schema | 5 tables, basic columns | 5 tables + migrations for 8 new report columns + resumed_from_run_id |
-| Types | Basic Run/RunReport | Run has resumed_from_run_id; RunReport has files_inspected_json, final_output, findings, risks, recommendations, what_implemented, follow_ups |
-| Tests | 51 tests, 11 files | 114 tests, 14 files |
+| Area | V1 (Execution Layer Only) | V2 (Session-First + Supervisor) |
+|------|---------------------------|----------------------------------|
+| UX surface | `cdx run --task "..."` | `cdx session start` → `cdx execute plan.md --until-done` |
+| Architecture | Single execution layer | Two-layer: supervisor + execution |
+| Session concept | None | Primary UX surface with name, status, goals |
+| Goal management | None | Internal to supervisor, lifecycle states, auto-pause |
+| Work packages | None | Ordered, with retry budget, blocker tracking |
+| Execution loop | Single run | Supervisor loop: schedule → dispatch → evaluate → snapshot → advance |
+| Snapshots | None | Full state captured between runs for context continuity |
+| No-plan mode | N/A | Ad-hoc tasks with evidence-based completion |
+| Decision tracking | None | Extracted from reports, accumulated across snapshots |
+| Closeout summary | None | Structured JSON at terminal states |
+| Progress detection | None | Keyword + evidence-based (plan vs ad-hoc modes) |
+| Prompt strategy | Static | Escalation: normal → focused → surgical → recovery |
+| DB tables | 5 (tasks, runs, logs, heartbeats, reports) | 10 (+ sessions, goals, work_packages, snapshots, execution_attempts) |
+| Source lines | ~1,700 | ~5,150 |
+| Test cases | 114 across 14 files | 224 across 21 files |

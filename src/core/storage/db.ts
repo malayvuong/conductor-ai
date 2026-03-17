@@ -19,8 +19,9 @@ export function getDb(dbPath?: string): Database.Database {
   _db = new Database(resolvedPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
-  _db.exec(SCHEMA_SQL);
+  // Run migration before schema to handle new columns needed by indexes
   migrateSchema(_db);
+  _db.exec(SCHEMA_SQL);
 
   return _db;
 }
