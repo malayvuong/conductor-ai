@@ -2,7 +2,7 @@ export type TaskType = 'debug_fix' | 'scan_review' | 'implement_feature' | 'veri
 export type TaskStatus = 'created' | 'running' | 'completed' | 'failed';
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed';
 export type StreamType = 'stdout' | 'stderr' | 'system';
-export type HeartbeatStatus = 'alive' | 'idle' | 'suspected_stuck';
+export type HeartbeatStatus = 'alive' | 'idle' | 'suspected_stuck' | 'recovered';
 
 export interface Task {
   id: string;

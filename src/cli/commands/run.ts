@@ -127,7 +127,9 @@ export function registerRunCommand(program: Command): void {
         onHeartbeat: (status, summary, noOutputSeconds) => {
           createHeartbeat(db, { run_id: run.id, status, summary, no_output_seconds: noOutputSeconds });
           if (status === 'suspected_stuck') {
-            log.error(`⚠ Suspected stuck: no output for ${Math.round(noOutputSeconds)}s`);
+            log.error(`No output for ${Math.round(noOutputSeconds)}s — engine may be processing`);
+          } else if (status === 'recovered') {
+            log.info('Output resumed');
           }
         },
       });

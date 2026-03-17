@@ -11,6 +11,7 @@ export class HeartbeatMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastOutputAt: number = Date.now();
   private lastLine: string = '';
+  private previousStatus: HeartbeatStatus = 'alive';
 
   constructor(config: HeartbeatConfig) {
     this.config = config;
@@ -18,6 +19,7 @@ export class HeartbeatMonitor {
 
   start(): void {
     this.lastOutputAt = Date.now();
+    this.previousStatus = 'alive';
     this.timer = setInterval(() => this.tick(), this.config.intervalMs);
   }
 
@@ -46,10 +48,24 @@ export class HeartbeatMonitor {
       status = 'idle';
       summary = `Idle ${Math.round(noOutputSeconds)}s. Last: ${this.lastLine}`;
     } else {
-      status = 'alive';
-      summary = this.lastLine || 'Running';
+      // If we were stuck/idle before and now have recent output, that's a recovery
+      if (this.previousStatus === 'suspected_stuck' || this.previousStatus === 'idle') {
+        status = 'recovered';
+        summary = `Output resumed. Last: ${this.lastLine}`;
+      } else {
+        status = 'alive';
+        summary = this.lastLine || 'Running';
+      }
     }
 
-    this.config.onHeartbeat(status, summary, noOutputSeconds);
+    // Only emit on state transitions or periodic alive checks
+    const isTransition = status !== this.previousStatus;
+    const shouldEmit = isTransition || status === 'alive';
+
+    if (shouldEmit) {
+      this.config.onHeartbeat(status, summary, noOutputSeconds);
+    }
+
+    this.previousStatus = status;
   }
 }
