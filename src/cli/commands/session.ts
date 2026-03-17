@@ -213,9 +213,123 @@ function showSessionInspect(session: Session, goals: Goal[], db: import('better-
   }
 }
 
-function showSessionHistory(session: Session, goals: Goal[], db: import('better-sqlite3').Database): void {
+function showGoalDetail(goal: Goal, db: import('better-sqlite3').Database): void {
+  const wps = getWPsByGoal(db, goal.id);
+  const counts = countWPsByStatus(wps);
+  const snapshots = getSnapshotsByGoal(db, goal.id);
+  const attempts = getAttemptsByGoal(db, goal.id);
+
+  console.log(`Goal: ${goal.title} [${goal.status}]`);
+  console.log(`  Type:       ${goal.goal_type || 'custom'}`);
+  console.log(`  Source:     ${formatGoalSource(goal)}`);
+  console.log(`  Progress:   ${counts.completed || 0}/${wps.length} WPs`);
+  console.log(`  Attempts:   ${attempts.length}`);
+  console.log('');
+
+  for (const wp of wps) {
+    const icon = wp.status === 'completed' ? 'x' : wp.status === 'active' ? '>' : wp.status === 'failed' || wp.status === 'blocked' ? '!' : ' ';
+    const retry = wp.retry_count > 0 ? ` [retries: ${wp.retry_count}/${wp.retry_budget}]` : '';
+    const blocker = wp.blocker_detail ? ` — ${wp.blocker_detail}` : '';
+    console.log(`  [${icon}] ${wp.seq}. ${wp.title}${retry}${blocker}`);
+  }
+  console.log('');
+
+  if (snapshots.length > 0) {
+    const latest = snapshots[snapshots.length - 1];
+    console.log(`  Latest Snapshot:`);
+    console.log(`    ${latest.trigger} — ${latest.summary.slice(0, 100)}`);
+    console.log(`    Next: ${latest.next_action.slice(0, 100)}`);
+    console.log('');
+  }
+
+  if (goal.closeout_summary) {
+    try {
+      const closeout = JSON.parse(goal.closeout_summary);
+      console.log('  Closeout:');
+      console.log(`    Status:   ${closeout.final_status}`);
+      console.log(`    WPs:      ${closeout.wps_completed}/${closeout.wps_total} completed`);
+      if (closeout.total_cost_usd) console.log(`    Cost:     $${closeout.total_cost_usd.toFixed(4)}`);
+      console.log('');
+    } catch { /* malformed */ }
+  }
+}
+
+function showGoalAttempts(goal: Goal, db: import('better-sqlite3').Database): void {
+  const attempts = getAttemptsByGoal(db, goal.id);
+  console.log(`Goal: ${goal.title}`);
+
+  if (attempts.length === 0) {
+    console.log('  No attempts yet.');
+    return;
+  }
+
+  for (const a of attempts) {
+    const progress = a.progress_detected ? 'progress' : 'no progress';
+    const files = a.files_changed_count > 0 ? `, ${a.files_changed_count} files changed` : '';
+    console.log(`  Attempt ${a.attempt_no} [${a.status}] ${a.prompt_strategy || 'normal'} — ${progress}${files}`);
+    if (a.notes) console.log(`    ${a.notes}`);
+    if (a.blocker_detail) console.log(`    Blocker: ${a.blocker_detail}`);
+  }
+}
+
+function showGoalSnapshots(goal: Goal, db: import('better-sqlite3').Database): void {
+  const snapshots = getSnapshotsByGoal(db, goal.id);
+  console.log(`Goal: ${goal.title}`);
+
+  if (snapshots.length === 0) {
+    console.log('  No snapshots yet.');
+    return;
+  }
+
+  for (let i = 0; i < snapshots.length; i++) {
+    const snap = snapshots[i];
+    console.log(`  Snap ${i + 1} (${snap.trigger}) — ${snap.summary.slice(0, 80)}`);
+    console.log(`    Next: ${snap.next_action.slice(0, 80)}`);
+
+    const files = snap.related_files ? safeParseArray(snap.related_files) : [];
+    if (files.length > 0) console.log(`    Files: ${files.length} total`);
+
+    const decisions = snap.decisions ? safeParseArray(snap.decisions) : [];
+    if (decisions.length > 0) console.log(`    Decisions: ${decisions.length}`);
+  }
+}
+
+function showGoalInsights(goal: Goal, db: import('better-sqlite3').Database): void {
+  const snapshots = getSnapshotsByGoal(db, goal.id);
+  console.log(`Goal: ${goal.title}`);
+  console.log('');
+
+  const seenDecisions = new Set<string>();
+  let hasAny = false;
+
+  for (let i = 0; i < snapshots.length; i++) {
+    const snap = snapshots[i];
+    const decisions = snap.decisions ? safeParseArray(snap.decisions) : [];
+    for (const d of decisions) {
+      const text = typeof d === 'string' ? d : d.decision || JSON.stringify(d);
+      if (!seenDecisions.has(text)) {
+        if (!hasAny) { console.log('  Decisions:'); hasAny = true; }
+        console.log(`    [Snap ${i + 1}] ${text}`);
+        seenDecisions.add(text);
+      }
+    }
+  }
+
+  if (!hasAny) {
+    console.log('  No insights recorded yet.');
+  }
+}
+
+function safeParseArray(json: string | null | undefined): any[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+function showSessionHistory(session: Session, goals: Goal[], db: import('better-sqlite3').Database, verbose = false): void {
   console.log(`Session: ${session.name} [${formatStatus(session.status)}]`);
-  console.log(`Created: ${session.created_at}`);
   console.log('');
 
   if (goals.length === 0) {
@@ -223,31 +337,31 @@ function showSessionHistory(session: Session, goals: Goal[], db: import('better-
     return;
   }
 
-  console.log(`Goals (${goals.length}):`);
-  console.log('');
-
-  for (const goal of goals) {
+  for (let i = 0; i < goals.length; i++) {
+    const goal = goals[i];
     const isActive = goal.id === session.active_goal_id;
     const wps = getWPsByGoal(db, goal.id);
     const counts = countWPsByStatus(wps);
     const attempts = getAttemptsByGoal(db, goal.id);
-    const snapshots = getSnapshotsByGoal(db, goal.id);
 
     const marker = isActive ? ' [ACTIVE]' : '';
-    console.log(`  ${goal.title}${marker}`);
-    console.log(`    Status:    ${goal.status}`);
-    console.log(`    Progress:  ${counts.completed || 0}/${wps.length} WPs`);
-    console.log(`    Attempts:  ${attempts.length}`);
-    console.log(`    Source:    ${formatGoalSource(goal)}`);
-    console.log(`    Created:   ${goal.created_at}`);
-    console.log(`    Updated:   ${goal.updated_at}`);
+    const status = formatStatus(goal.status);
 
-    if (snapshots.length > 0) {
-      const latest = snapshots[snapshots.length - 1];
-      console.log(`    Summary:   ${latest.summary.slice(0, 80)}`);
+    if (verbose) {
+      const snapshots = getSnapshotsByGoal(db, goal.id);
+      console.log(`  ${i + 1}. ${goal.title} [${status}]${marker}`);
+      console.log(`     Progress:  ${counts.completed || 0}/${wps.length} WPs, ${attempts.length} attempts`);
+      console.log(`     Source:    ${formatGoalSource(goal)}`);
+      console.log(`     Created:   ${goal.created_at}`);
+      console.log(`     Updated:   ${goal.updated_at}`);
+      if (snapshots.length > 0) {
+        const latest = snapshots[snapshots.length - 1];
+        console.log(`     Summary:   ${latest.summary.slice(0, 80)}`);
+      }
+      console.log('');
+    } else {
+      console.log(`  ${i + 1}. ${goal.title} [${status}]${marker} — ${counts.completed || 0}/${wps.length} WPs, ${attempts.length} attempts`);
     }
-
-    console.log('');
   }
 }
 
@@ -351,13 +465,38 @@ export function registerSessionCommand(program: Command): void {
   sessionCmd
     .command('inspect')
     .description('Detailed inspection of current session')
-    .action(async () => {
+    .option('--goal <n>', 'Show specific goal by sequence number', parseInt)
+    .option('--attempts', 'Show attempt timeline for goal')
+    .option('--snapshots', 'Show snapshot chain for goal')
+    .option('--insights', 'Show decisions and insights for goal')
+    .action(async (opts: { goal?: number; attempts?: boolean; snapshots?: boolean; insights?: boolean }) => {
       const db = getDb();
       const session = resolveSession(db);
       if (!session) {
         console.log('No active session. Run: cdx session start <name> --path <path>');
         return;
       }
+
+      if (opts.goal) {
+        const goal = getGoalBySeq(db, session.id, opts.goal);
+        if (!goal) {
+          log.error(`Goal #${opts.goal} not found in session "${session.name}".`);
+          return;
+        }
+
+        if (opts.attempts) {
+          showGoalAttempts(goal, db);
+        } else if (opts.snapshots) {
+          showGoalSnapshots(goal, db);
+        } else if (opts.insights) {
+          showGoalInsights(goal, db);
+        } else {
+          showGoalDetail(goal, db);
+        }
+        return;
+      }
+
+      // Default: full dump
       const goals = getGoalsBySession(db, session.id);
       showSessionInspect(session, goals, db);
     });
@@ -366,7 +505,8 @@ export function registerSessionCommand(program: Command): void {
   sessionCmd
     .command('history')
     .description('View session goal history as reference')
-    .action(async () => {
+    .option('--verbose', 'Show detailed information')
+    .action(async (opts: { verbose?: boolean }) => {
       const db = getDb();
       const session = resolveSession(db);
       if (!session) {
@@ -374,7 +514,7 @@ export function registerSessionCommand(program: Command): void {
         return;
       }
       const goals = getGoalsBySession(db, session.id);
-      showSessionHistory(session, goals, db);
+      showSessionHistory(session, goals, db, opts.verbose);
     });
 
   // cdx session current
@@ -566,13 +706,37 @@ export function registerInspectCommand(program: Command): void {
   program
     .command('inspect')
     .description('Detailed inspection of current session')
-    .action(async () => {
+    .option('--goal <n>', 'Show specific goal by sequence number', parseInt)
+    .option('--attempts', 'Show attempt timeline for goal')
+    .option('--snapshots', 'Show snapshot chain for goal')
+    .option('--insights', 'Show decisions and insights for goal')
+    .action(async (opts: { goal?: number; attempts?: boolean; snapshots?: boolean; insights?: boolean }) => {
       const db = getDb();
       const session = resolveSession(db);
       if (!session) {
         console.log('No active session. Run: cdx session start <name> --path <path>');
         return;
       }
+
+      if (opts.goal) {
+        const goal = getGoalBySeq(db, session.id, opts.goal);
+        if (!goal) {
+          log.error(`Goal #${opts.goal} not found in session "${session.name}".`);
+          return;
+        }
+
+        if (opts.attempts) {
+          showGoalAttempts(goal, db);
+        } else if (opts.snapshots) {
+          showGoalSnapshots(goal, db);
+        } else if (opts.insights) {
+          showGoalInsights(goal, db);
+        } else {
+          showGoalDetail(goal, db);
+        }
+        return;
+      }
+
       const goals = getGoalsBySession(db, session.id);
       showSessionInspect(session, goals, db);
     });
