@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-17
 **Version:** 2026.3.17
-**Codebase:** ~5,150 lines source / ~3,320 lines tests / 224 test cases / 21 test files
+**Codebase:** ~5,760 lines source / ~3,880 lines tests / 265 test cases / 26 test files
 
 ---
 
@@ -10,20 +10,25 @@
 
 **What is working:**
 
-Supervisor Layer (new):
-- Session-first UX: session start/list/status/inspect/history
+Supervisor Layer:
+- Session-first UX: session start/list/status/inspect/history + current/pause/resume/switch/close
 - `cdx execute plan.md --until-done` — plan mode with WP decomposition
 - `cdx execute "task description" --until-done` — no-plan mode with evidence-based completion
 - Resume after interruption: Ctrl+C pauses session/goal, next `cdx execute --until-done` resumes
 - Goal lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 - Auto-pause old goal when starting new task mid-session
 - Closeout summary per goal (files, decisions, blockers, next action)
-- Decision extraction from run reports
+- Enhanced insight extraction: decisions, assumptions, open questions, follow-ups, constraints
 - Prompt strategy escalation: normal → focused → surgical → recovery
 - Snapshot compaction between runs preserves full execution context
+- Live progress output: compact single-line events replacing scattered log.info() calls
+- Inspect drill-down: `--goal N`, `--attempts`, `--snapshots`, `--insights` flags
+- Session management: current, pause, resume, switch, close commands
+- Session hygiene: passive warnings for stale sessions (>7 days) and paused goal accumulation (>=3)
+- History: compact format with seq numbers, `--verbose` for full detail
 
 Execution Layer (stable):
-- CLI surface: 10 commands + 3 config subcommands
+- CLI surface: 15 commands + 5 session subcommands + 3 config subcommands
 - Task intake, classification (Vietnamese + English), persistence
 - Prompt template system: 4 task types × 2 engines
 - SQLite persistence for all entities with auto-migrations
@@ -31,7 +36,7 @@ Execution Layer (stable):
 - Heartbeat monitoring (state-tracked, no spam)
 - Task-type-aware structured report generation
 - Resume with curated context from best previous run
-- 224 tests pass across 21 test files
+- 265 tests pass across 26 test files
 
 **What is partially implemented:**
 - `cdx logs` shows raw JSON lines for Claude runs (not parsed human-readable text)
@@ -49,10 +54,15 @@ Execution Layer (stable):
 |---------|--------|-------|
 | `cdx session start <name>` | Working | Creates or reactivates session. Supports --engine, --path. |
 | `cdx session list` | Working | Lists sessions with status filter. |
-| `cdx session status` / `cdx status` | Working | Shows session, active goal, WP progress, retries. |
-| `cdx session inspect` / `cdx inspect` | Working | Deep dive: goals, WPs, attempts, snapshots, closeout. |
-| `cdx session history` | Working | Goal history as reference. |
-| `cdx execute [source] --until-done` | Working | Plan mode, no-plan mode, resume. Auto-pause on task switch. |
+| `cdx session status` / `cdx status` | Working | Shows session, active goal, WP progress, retries, hygiene warnings. |
+| `cdx session inspect` / `cdx inspect` | Working | Full dump or drill-down with --goal, --attempts, --snapshots, --insights. |
+| `cdx session history` | Working | Compact format with seq numbers. --verbose for full detail. |
+| `cdx session current` | Working | Shows which session is active. |
+| `cdx session pause` | Working | Pauses session + active goal. |
+| `cdx session resume [name]` | Working | Resumes paused session (by name or most recent). |
+| `cdx session switch <name>` | Working | Pauses current, activates target session. |
+| `cdx session close` | Working | Closes session. Unfinished goals → abandoned with closeout. |
+| `cdx execute [source] --until-done` | Working | Plan mode, no-plan mode, resume. Live progress output. |
 | `cdx run` | Working | Single-run orchestration (execution layer). |
 | `cdx resume <taskId>` | Working | Two-layer context selection + structured prompt. |
 | `cdx tasks` | Working | Lists all tasks. No status filter. |
@@ -66,20 +76,20 @@ Execution Layer (stable):
 ## 3. Supervisor Layer
 
 ### Sessions
-**Status: Working.** Session is the primary UX surface. `getActiveSession()` prefers active/created, falls back to paused (handles Ctrl+C interrupts). Session resolution: by name or most recent active.
+**Status: Working.** Session is the primary UX surface. `getActiveSession()` prefers active/created, falls back to paused (handles Ctrl+C interrupts). Session resolution: by name or most recent active. Full lifecycle: current, pause, resume, switch, close. Shared primitives `pauseCurrentSession()` and `activateSession()` used across commands.
 
 ### Goals
 **Status: Working.** Goals are internal to the supervisor. Two source types:
 - `plan_file` — from plan.md, decomposed into multiple WPs
 - `inline_task` — from ad-hoc text, single WP with stricter completion
 
-Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned. Auto-pause when user starts new task while old goal is active.
+Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned. Auto-pause when user starts new task while old goal is active. Goal lookup by seq number (1-based, ordered by `created_at ASC, rowid ASC`).
 
 ### Work Packages
 **Status: Working.** Scheduler picks next WP by seq order, skips completed/blocked. Retry budget (3 for plan, 2 for ad-hoc). Blocker tracking (hard/soft with detail).
 
 ### Snapshots
-**Status: Working.** Compactor builds snapshots between runs capturing: completed/in-progress/remaining items, decisions, constraints, related files, blockers, next action. Decision extraction parses `## Decisions` sections and "decided to..." patterns from reports.
+**Status: Working.** Compactor builds snapshots between runs capturing: completed/in-progress/remaining items, decisions, constraints, related files, blockers, next action, assumptions, unresolved questions, follow-ups. Enhanced insight extraction via structured markdown sections (`## Assumptions Made`, `## Open Questions`, etc.) with pattern matching fallback.
 
 ### Execution Attempts
 **Status: Working.** Each run is tracked as an attempt with: prompt strategy, progress detection, files changed count, WP completion count, blocker info.
@@ -88,6 +98,12 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 **Status: Working.** Two modes:
 - Plan mode: completion signal in report summary/final_output is sufficient
 - No-plan mode: completion signal + evidence required (files_changed, fix_applied, verification, or what_implemented)
+
+### Live Progress Output
+**Status: Working.** `formatProgressEvent()` pure functions format 7 event types as compact single-line output. Integrated into supervisor loop, replacing scattered `log.info()` and `process.stdout.write('.')` calls. Goal-level summary emitted in execute.ts.
+
+### Session Hygiene
+**Status: Working.** Pure function guardrails: `checkStaleSession()` warns after 7 days idle, `checkPausedGoals()` warns at 3+ paused goals. Injected into status display. Passive warnings only — never blocks execution.
 
 ### Closeout Summary
 **Status: Working.** Generated at every terminal state (completed, failed, hard_blocked, abandoned). Structured JSON with: source, objective, final status, attempt/WP counts, files touched, key decisions, blockers, next recommended action, cost estimate.
@@ -100,7 +116,7 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 **Status: Working.** Task classification via regex for Vietnamese + English keywords. All 4 task types covered (debug_fix, scan_review, implement_feature, verify_only).
 
 ### Prompt Generation
-**Status: Working.** Templates for all 4 types × 2 engines. Variable substitution. Resume prompt built from curated context.
+**Status: Working.** Templates for all 4 types × 2 engines. Variable substitution. Resume prompt built from curated context. Supervisor prompts now include insight section instructions (Assumptions Made, Open Questions, Follow-up Items, Constraints Discovered).
 
 ### Engine Execution
 **Status: Working (Claude) / Untested (Codex).** Claude adapter uses `--print --output-format stream-json --verbose --dangerously-skip-permissions`.
@@ -117,14 +133,17 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 
 | Area | Status | Detail |
 |------|--------|--------|
-| Session management | Ready | Start, list, status, inspect, history — all working |
+| Session management | Ready | Start, list, status, inspect, history, current, pause, resume, switch, close |
 | Plan execution | Ready | Parse → WPs → loop → snapshot → advance |
 | No-plan execution | Ready | Single WP with evidence-based completion |
 | Resume after interrupt | Ready | Ctrl+C pauses, next execute resumes seamlessly |
 | Task switching | Ready | Auto-pause old goal, inform user, activate new |
 | Goal lifecycle | Ready | All states covered with proper transitions |
 | Closeout summary | Ready | Generated at all terminal states |
-| Decision extraction | Ready | From report sections and text patterns |
+| Insight extraction | Ready | Decisions, assumptions, questions, follow-ups, constraints from reports |
+| Live progress output | Ready | Compact single-line events during execution |
+| Inspect drill-down | Ready | --goal, --attempts, --snapshots, --insights flags |
+| Session hygiene | Ready | Passive warnings for stale sessions and paused goal accumulation |
 | Single-run execution | Ready | Full pipeline with diagnostics, streaming, reporting |
 | Engine execution | Ready (Claude) / Untested (Codex) | Claude adapter verified |
 | Log retrieval | Not ready | `cdx logs` shows raw JSON, not parsed text |
@@ -163,8 +182,8 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 |------|------|
 | **CLI** | |
 | src/cli/index.ts | CLI entry point + command registration |
-| src/cli/commands/session.ts | Session management + display helpers |
-| src/cli/commands/execute.ts | Supervisor execution (plan + no-plan + resume) |
+| src/cli/commands/session.ts | Session management (start/list/status/inspect/history/current/pause/resume/switch/close) + display helpers |
+| src/cli/commands/execute.ts | Supervisor execution (plan + no-plan + resume) with progress output |
 | src/cli/commands/goal.ts | [Internal] Goal management |
 | src/cli/commands/run.ts | Single-run orchestration |
 | src/cli/commands/resume.ts | Resume with curated context |
@@ -174,18 +193,20 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 | src/cli/commands/runs.ts | Run metadata inspection |
 | src/cli/commands/config.ts | Config commands |
 | **Supervisor** | |
-| src/core/supervisor/loop.ts | Main supervisor loop (until-done) |
+| src/core/supervisor/loop.ts | Main supervisor loop (until-done) with progress events |
 | src/core/supervisor/scheduler.ts | WP scheduling + status counting |
 | src/core/supervisor/plan-parser.ts | Markdown plan → WP decomposition |
-| src/core/supervisor/prompt-builder.ts | Supervisor prompt (plan + ad-hoc modes) |
+| src/core/supervisor/prompt-builder.ts | Supervisor prompt (plan + ad-hoc modes) + insight instructions |
 | src/core/supervisor/progress.ts | Evidence-based progress detection |
-| src/core/supervisor/compactor.ts | Snapshot builder + decision extraction |
+| src/core/supervisor/compactor.ts | Snapshot builder + enhanced insight extraction |
 | src/core/supervisor/closeout.ts | Goal closeout summary generation |
+| src/core/supervisor/progress-reporter.ts | Live progress event formatting (pure functions) |
+| src/core/supervisor/hygiene.ts | Session health warnings (stale, paused goals) |
 | **Storage** | |
-| src/core/storage/schema.ts | SQL DDL + migrations |
+| src/core/storage/schema.ts | SQL DDL + migrations (incl. enhanced compaction columns) |
 | src/core/storage/db.ts | SQLite singleton (WAL mode) |
 | src/core/storage/repository.ts | Execution layer CRUD |
-| src/core/storage/supervisor-repository.ts | Supervisor layer CRUD |
+| src/core/storage/supervisor-repository.ts | Supervisor layer CRUD + getGoalBySeq |
 | **Engine** | |
 | src/core/engine/types.ts | Adapter interface + factory |
 | src/core/engine/claude.ts | Claude CLI adapter |
@@ -203,9 +224,9 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 | src/core/resume/prompt.ts | Resume prompt rendering |
 | **Types** | |
 | src/types/index.ts | Execution layer types |
-| src/types/supervisor.ts | Supervisor layer types |
+| src/types/supervisor.ts | Supervisor layer types (incl. enhanced Snapshot) |
 | **Tests** | |
-| tests/ (21 files) | 224 test cases |
+| tests/ (26 files) | 265 test cases |
 | prompts/ (8 files) | Prompt templates |
 
 ---
@@ -217,15 +238,19 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 | UX surface | `cdx run --task "..."` | `cdx session start` → `cdx execute plan.md --until-done` |
 | Architecture | Single execution layer | Two-layer: supervisor + execution |
 | Session concept | None | Primary UX surface with name, status, goals |
+| Session management | None | current, pause, resume, switch, close |
 | Goal management | None | Internal to supervisor, lifecycle states, auto-pause |
 | Work packages | None | Ordered, with retry budget, blocker tracking |
 | Execution loop | Single run | Supervisor loop: schedule → dispatch → evaluate → snapshot → advance |
+| Live progress | None | Compact single-line events during execution |
 | Snapshots | None | Full state captured between runs for context continuity |
 | No-plan mode | N/A | Ad-hoc tasks with evidence-based completion |
-| Decision tracking | None | Extracted from reports, accumulated across snapshots |
+| Insight extraction | None | Decisions, assumptions, questions, follow-ups, constraints |
 | Closeout summary | None | Structured JSON at terminal states |
 | Progress detection | None | Keyword + evidence-based (plan vs ad-hoc modes) |
+| Inspect drill-down | None | --goal, --attempts, --snapshots, --insights flags |
+| Session hygiene | None | Passive warnings for stale sessions and paused goal accumulation |
 | Prompt strategy | Static | Escalation: normal → focused → surgical → recovery |
 | DB tables | 5 (tasks, runs, logs, heartbeats, reports) | 10 (+ sessions, goals, work_packages, snapshots, execution_attempts) |
-| Source lines | ~1,700 | ~5,150 |
-| Test cases | 114 across 14 files | 224 across 21 files |
+| Source lines | ~1,700 | ~5,760 |
+| Test cases | 114 across 14 files | 265 across 26 files |
