@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
-import { SCHEMA_SQL } from './schema.js';
+import { SCHEMA_SQL, migrateSchema } from './schema.js';
 
 const DEFAULT_DB_PATH = path.join(process.cwd(), 'data', 'conductor.db');
 
@@ -20,6 +20,7 @@ export function getDb(dbPath?: string): Database.Database {
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
   _db.exec(SCHEMA_SQL);
+  migrateSchema(_db);
 
   return _db;
 }

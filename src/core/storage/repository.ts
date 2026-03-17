@@ -46,14 +46,15 @@ interface CreateRunInput {
   command: string;
   args_json: string;
   prompt_final: string;
+  resumed_from_run_id?: string | null;
 }
 
 export function createRun(db: Database.Database, input: CreateRunInput): Run {
   const id = randomUUID();
   db.prepare(
-    `INSERT INTO runs (id, task_id, engine, command, args_json, prompt_final, status)
-     VALUES (?, ?, ?, ?, ?, ?, 'queued')`
-  ).run(id, input.task_id, input.engine, input.command, input.args_json, input.prompt_final);
+    `INSERT INTO runs (id, task_id, engine, command, args_json, prompt_final, status, resumed_from_run_id)
+     VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`
+  ).run(id, input.task_id, input.engine, input.command, input.args_json, input.prompt_final, input.resumed_from_run_id ?? null);
   return getRunById(db, id)!;
 }
 
@@ -121,19 +122,33 @@ export function getHeartbeatsByRunId(db: Database.Database, runId: string): Hear
 interface SaveReportInput {
   run_id: string;
   summary: string;
-  root_cause: string | null;
-  fix_applied: string | null;
+  files_inspected_json: string | null;
   files_changed_json: string | null;
   verification_notes: string | null;
+  final_output: string | null;
+  root_cause: string | null;
+  fix_applied: string | null;
   remaining_risks: string | null;
+  findings: string | null;
+  risks: string | null;
+  recommendations: string | null;
+  what_implemented: string | null;
+  follow_ups: string | null;
 }
 
 export function saveReport(db: Database.Database, input: SaveReportInput): RunReport {
   const id = randomUUID();
   db.prepare(
-    `INSERT INTO run_reports (id, run_id, summary, root_cause, fix_applied, files_changed_json, verification_notes, remaining_risks)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, input.run_id, input.summary, input.root_cause, input.fix_applied, input.files_changed_json, input.verification_notes, input.remaining_risks);
+    `INSERT INTO run_reports (id, run_id, summary, files_inspected_json, files_changed_json, verification_notes, final_output, root_cause, fix_applied, remaining_risks, findings, risks, recommendations, what_implemented, follow_ups)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id, input.run_id, input.summary,
+    input.files_inspected_json, input.files_changed_json,
+    input.verification_notes, input.final_output,
+    input.root_cause, input.fix_applied, input.remaining_risks,
+    input.findings, input.risks, input.recommendations,
+    input.what_implemented, input.follow_ups,
+  );
   return getReportByRunId(db, input.run_id)!;
 }
 

@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS runs (
   pid INTEGER,
   started_at TEXT,
   finished_at TEXT,
-  exit_code INTEGER
+  exit_code INTEGER,
+  resumed_from_run_id TEXT REFERENCES runs(id)
 );
 
 CREATE TABLE IF NOT EXISTS run_logs (
@@ -47,11 +48,18 @@ CREATE TABLE IF NOT EXISTS run_reports (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES runs(id),
   summary TEXT NOT NULL DEFAULT '',
-  root_cause TEXT,
-  fix_applied TEXT,
+  files_inspected_json TEXT,
   files_changed_json TEXT,
   verification_notes TEXT,
-  remaining_risks TEXT
+  final_output TEXT,
+  root_cause TEXT,
+  fix_applied TEXT,
+  remaining_risks TEXT,
+  findings TEXT,
+  risks TEXT,
+  recommendations TEXT,
+  what_implemented TEXT,
+  follow_ups TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_task_id ON runs(task_id);
@@ -59,3 +67,34 @@ CREATE INDEX IF NOT EXISTS idx_run_logs_run_id ON run_logs(run_id);
 CREATE INDEX IF NOT EXISTS idx_heartbeat_events_run_id ON heartbeat_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_run_reports_run_id ON run_reports(run_id);
 `;
+
+/**
+ * Migrate existing run_reports tables to add new columns.
+ * Safe to call on fresh DBs (columns already exist from CREATE TABLE).
+ */
+export function migrateSchema(db: import('better-sqlite3').Database): void {
+  migrateReportColumns(db);
+  // Add resumed_from_run_id to runs table
+  try {
+    db.exec('ALTER TABLE runs ADD COLUMN resumed_from_run_id TEXT REFERENCES runs(id)');
+  } catch { /* already exists */ }
+}
+
+function migrateReportColumns(db: import('better-sqlite3').Database): void {
+  const newColumns = [
+    'files_inspected_json TEXT',
+    'final_output TEXT',
+    'findings TEXT',
+    'risks TEXT',
+    'recommendations TEXT',
+    'what_implemented TEXT',
+    'follow_ups TEXT',
+  ];
+  for (const col of newColumns) {
+    try {
+      db.exec(`ALTER TABLE run_reports ADD COLUMN ${col}`);
+    } catch {
+      // Column already exists — ignore
+    }
+  }
+}

@@ -28,6 +28,7 @@ export interface Run {
   started_at: string | null;
   finished_at: string | null;
   exit_code: number | null;
+  resumed_from_run_id: string | null;
 }
 
 export interface RunLog {
@@ -52,9 +53,21 @@ export interface RunReport {
   id: string;
   run_id: string;
   summary: string;
+  // File tracking (semantic: Read → inspected, Edit/Write → changed)
+  files_inspected_json: string | null;
+  files_changed_json: string | null;
+  // Common
+  verification_notes: string | null;
+  final_output: string | null;
+  // debug_fix
   root_cause: string | null;
   fix_applied: string | null;
-  files_changed_json: string | null;
-  verification_notes: string | null;
   remaining_risks: string | null;
+  // scan_review
+  findings: string | null;
+  risks: string | null;
+  recommendations: string | null;
+  // implement_feature
+  what_implemented: string | null;
+  follow_ups: string | null;
 }
