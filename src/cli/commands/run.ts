@@ -13,30 +13,44 @@ import { runProcess } from '../../core/runner/process.js';
 import { HeartbeatMonitor } from '../../core/heartbeat/monitor.js';
 import { log } from '../../utils/logger.js';
 import { generateReport } from '../../core/report/generator.js';
+import { loadConfig } from '../../core/config/service.js';
 import type { Run, RunStatus } from '../../types/index.js';
 
 export function registerRunCommand(program: Command): void {
   program
     .command('run')
     .description('Run a task with an AI engine')
-    .requiredOption('--engine <engine>', 'Engine to use (claude, codex)')
-    .requiredOption('--path <path>', 'Workspace path')
+    .option('--engine <engine>', 'Engine to use (claude, codex)')
+    .option('--path <path>', 'Workspace path')
     .requiredOption('--task <task>', 'Task description')
     .action(async (opts) => {
       const db = getDb();
+      const config = loadConfig();
 
-      // Validate path exists
-      if (!fs.existsSync(opts.path)) {
-        log.error(`Workspace path does not exist: ${opts.path}`);
+      // Resolve path: CLI flag > config default
+      const workspacePath = opts.path || config.defaultPath;
+      if (!workspacePath) {
+        log.error('No workspace path. Use --path or set default: conductor set-path <path>');
         process.exit(1);
       }
+      if (!fs.existsSync(workspacePath)) {
+        log.error(`Workspace path does not exist: ${workspacePath}`);
+        process.exit(1);
+      }
+      opts.path = workspacePath;
 
-      // Validate engine name
+      // Resolve engine: CLI flag > config default
+      const engineName = opts.engine || config.defaultEngine;
+      if (!engineName) {
+        log.error('No engine specified. Use --engine or set defaultEngine in config.');
+        process.exit(1);
+      }
       const validEngines = ['claude', 'codex'];
-      if (!validEngines.includes(opts.engine)) {
-        log.error(`Unknown engine: ${opts.engine}. Available: ${validEngines.join(', ')}`);
+      if (!validEngines.includes(engineName)) {
+        log.error(`Unknown engine: ${engineName}. Available: ${validEngines.join(', ')}`);
         process.exit(1);
       }
+      opts.engine = engineName;
 
       // 1. Create task
       const task = createTask(db, {
@@ -104,10 +118,12 @@ export function registerRunCommand(program: Command): void {
       appendRunLog(db, run.id, 'system', `engine=${opts.engine} cwd=${opts.path} prompt_len=${promptFinal.length}`);
       console.log('');
 
-      // Start heartbeat
+      // Start heartbeat (use config overrides if set)
+      const heartbeatInterval = (config.heartbeatIntervalSec || 15) * 1000;
+      const stuckThreshold = config.stuckThresholdSec || 60;
       const heartbeat = new HeartbeatMonitor({
-        intervalMs: 15000, // 15 seconds
-        stuckThresholdSeconds: 60,
+        intervalMs: heartbeatInterval,
+        stuckThresholdSeconds: stuckThreshold,
         onHeartbeat: (status, summary, noOutputSeconds) => {
           createHeartbeat(db, { run_id: run.id, status, summary, no_output_seconds: noOutputSeconds });
           if (status === 'suspected_stuck') {
