@@ -97,7 +97,7 @@ export function registerRunCommand(program: Command): void {
       // Log execution details
       log.info('Starting engine process...');
       log.info(`  Engine:    ${opts.engine}`);
-      log.info(`  Command:   ${command.executable} ${command.args.filter(a => a !== (command as any).stdin && a.length < 60).join(' ')}`);
+      log.info(`  Command:   ${command.executable} ${command.args.join(' ')}${command.stdin ? ' (prompt via stdin)' : ''}`);
       log.info(`  CWD:       ${opts.path}`);
       log.info(`  Prompt:    ${promptFinal.length} chars`);
       log.debug(`  Preview:   ${promptFinal.slice(0, 200).replace(/\n/g, '\\n')}...`);

@@ -2,6 +2,7 @@ export interface EngineCommand {
   executable: string;
   args: string[];
   env?: Record<string, string>;
+  stdin?: string;
 }
 
 export interface EngineAdapter {

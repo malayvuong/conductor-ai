@@ -8,13 +8,16 @@ describe('CodexAdapter', () => {
     expect(adapter.name).toBe('codex');
   });
 
-  it('builds command with prompt and workspace path', () => {
+  it('builds command with prompt via stdin', () => {
     const cmd = adapter.buildCommand({
       prompt: 'Review the API endpoints',
       workspacePath: '/Users/test/project',
     });
 
     expect(cmd.executable).toBe('codex');
-    expect(cmd.args.some(a => a.includes('Review the API'))).toBe(true);
+    expect(cmd.args).toContain('--quiet');
+    expect(cmd.args).toContain('--auto-edit');
+    expect(cmd.stdin).toBe('Review the API endpoints');
+    expect(cmd.args.some(a => a.includes('Review'))).toBe(false);
   });
 });

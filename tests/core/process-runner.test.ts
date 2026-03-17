@@ -55,4 +55,34 @@ describe('runProcess', () => {
     expect(capturedPid).toBeDefined();
     expect(capturedPid).toBeGreaterThan(0);
   });
+
+  it('pipes stdin to child process', async () => {
+    const lines: { stream: string; line: string }[] = [];
+
+    const result = await runProcess(
+      { executable: 'cat', args: [], env: {}, stdin: 'hello from stdin' },
+      {
+        onLine: (stream, line) => lines.push({ stream, line }),
+      }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(lines.some(l => l.line === 'hello from stdin')).toBe(true);
+  });
+
+  it('passes cwd to child process', async () => {
+    const lines: { stream: string; line: string }[] = [];
+
+    const result = await runProcess(
+      { executable: 'pwd', args: [], env: {} },
+      {
+        cwd: '/tmp',
+        onLine: (stream, line) => lines.push({ stream, line }),
+      }
+    );
+
+    expect(result.exitCode).toBe(0);
+    // /tmp may resolve to /private/tmp on macOS
+    expect(lines[0].line).toMatch(/\/tmp$/);
+  });
 });

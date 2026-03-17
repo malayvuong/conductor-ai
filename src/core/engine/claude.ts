@@ -10,9 +10,9 @@ export class ClaudeAdapter implements EngineAdapter {
       args: [
         '--print',
         '--dangerously-skip-permissions',
-        input.prompt,
       ],
       env: {},
+      stdin: input.prompt,
     };
   }
 

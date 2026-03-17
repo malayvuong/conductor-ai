@@ -22,14 +22,22 @@ export function runProcess(
   options: ProcessOptions,
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
+    const useStdin = !!command.stdin;
+
     const child = spawn(command.executable, command.args, {
       cwd: options.cwd,
       env: { ...process.env, ...command.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     });
 
     if (child.pid) {
       options.onPid?.(child.pid);
+    }
+
+    // Pipe prompt via stdin if provided
+    if (useStdin && child.stdin) {
+      child.stdin.write(command.stdin);
+      child.stdin.end();
     }
 
     const stdoutRl = createInterface({ input: child.stdout! });

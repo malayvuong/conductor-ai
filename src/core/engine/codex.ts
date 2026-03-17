@@ -10,9 +10,9 @@ export class CodexAdapter implements EngineAdapter {
       args: [
         '--quiet',
         '--auto-edit',
-        input.prompt,
       ],
       env: {},
+      stdin: input.prompt,
     };
   }
 
