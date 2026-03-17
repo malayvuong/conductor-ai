@@ -10,6 +10,7 @@ import {
 } from '../../core/storage/supervisor-repository.js';
 import { countWPsByStatus } from '../../core/supervisor/scheduler.js';
 import { buildCloseoutSummary } from '../../core/supervisor/closeout.js';
+import { getSessionWarnings } from '../../core/supervisor/hygiene.js';
 import { loadConfig } from '../../core/config/service.js';
 import { log } from '../../utils/logger.js';
 import type { Session, Goal } from '../../types/supervisor.js';
@@ -79,6 +80,12 @@ function formatGoalSource(goal: Goal): string {
   return goal.source_file ? `Plan: ${goal.source_file}` : '—';
 }
 
+function displayWarnings(warnings: import('../../core/supervisor/hygiene.js').Warning[]): void {
+  for (const w of warnings) {
+    console.log(`⚠ ${w.message} ${w.suggestion}`);
+  }
+}
+
 function showSessionStatus(session: Session, goals: Goal[], db: import('better-sqlite3').Database): void {
   console.log(`Session:  ${session.name} [${formatStatus(session.status)}]`);
   console.log(`Engine:   ${session.engine}`);
@@ -119,6 +126,12 @@ function showSessionStatus(session: Session, goals: Goal[], db: import('better-s
 
   console.log('');
   console.log(`Updated:  ${session.updated_at}`);
+
+  const warnings = getSessionWarnings(session, goals);
+  if (warnings.length > 0) {
+    console.log('');
+    displayWarnings(warnings);
+  }
 }
 
 function showSessionInspect(session: Session, goals: Goal[], db: import('better-sqlite3').Database): void {
