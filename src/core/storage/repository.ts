@@ -24,8 +24,13 @@ export function getTaskById(db: Database.Database, id: string): Task | undefined
   return db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Task | undefined;
 }
 
-export function listTasks(db: Database.Database): Task[] {
-  return db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all() as Task[];
+export function listTasks(db: Database.Database, filters?: { status?: string; engine?: string }): Task[] {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (filters?.status) { conditions.push('status = ?'); params.push(filters.status); }
+  if (filters?.engine) { conditions.push('engine = ?'); params.push(filters.engine); }
+  const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+  return db.prepare(`SELECT * FROM tasks${where} ORDER BY created_at DESC`).all(...params) as Task[];
 }
 
 export function updateTaskStatus(db: Database.Database, id: string, status: TaskStatus): void {
@@ -79,9 +84,22 @@ export function updateRunStarted(db: Database.Database, id: string): void {
     .run('running', new Date().toISOString(), id);
 }
 
-export function updateRunFinished(db: Database.Database, id: string, status: RunStatus, exitCode: number | null): void {
-  db.prepare('UPDATE runs SET status = ?, finished_at = ?, exit_code = ? WHERE id = ?')
-    .run(status, new Date().toISOString(), exitCode, id);
+export function updateRunFinished(
+  db: Database.Database, id: string, status: RunStatus, exitCode: number | null,
+  costUsd?: number | null, durationSeconds?: number | null,
+): void {
+  db.prepare('UPDATE runs SET status = ?, finished_at = ?, exit_code = ?, cost_usd = ?, duration_seconds = ? WHERE id = ?')
+    .run(status, new Date().toISOString(), exitCode, costUsd ?? null, durationSeconds ?? null, id);
+}
+
+export function listRuns(db: Database.Database, filters?: { task_id?: string; status?: string; engine?: string }): Run[] {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (filters?.task_id) { conditions.push('task_id = ?'); params.push(filters.task_id); }
+  if (filters?.status) { conditions.push('status = ?'); params.push(filters.status); }
+  if (filters?.engine) { conditions.push('engine = ?'); params.push(filters.engine); }
+  const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+  return db.prepare(`SELECT * FROM runs${where} ORDER BY started_at DESC`).all(...params) as Run[];
 }
 
 // ---- Run Logs ----

@@ -13,7 +13,7 @@ const makeRun = (overrides?: Partial<Run>): Run => ({
   id: 'run-1', task_id: 'task-1', engine: 'claude', command: 'claude',
   args_json: '[]', prompt_final: 'prompt', status: 'completed',
   pid: 123, started_at: '2026-03-17T10:00:00Z', finished_at: '2026-03-17T10:05:00Z',
-  exit_code: 0,
+  exit_code: 0, resumed_from_run_id: null, cost_usd: null, duration_seconds: null,
   ...overrides,
 });
 

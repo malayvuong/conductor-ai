@@ -152,6 +152,8 @@ export function registerRunCommand(program: Command): void {
       process.on('SIGTERM', cleanup);
 
       const isStreaming = engine.streaming;
+      let runCostUsd: number | null = null;
+      let runDurationSeconds: number | null = null;
 
       try {
         const result = await runProcess(command, {
@@ -169,6 +171,14 @@ export function registerRunCommand(program: Command): void {
               if (parsed.display) {
                 console.log(parsed.display);
               }
+              // Capture cost from result event
+              try {
+                const event = JSON.parse(line);
+                if (event.type === 'result') {
+                  if (event.total_cost_usd != null) runCostUsd = event.total_cost_usd;
+                  if (event.duration_ms != null) runDurationSeconds = Math.round(event.duration_ms / 1000 * 100) / 100;
+                }
+              } catch { /* not JSON */ }
             } else {
               console.log(line);
             }
@@ -182,7 +192,7 @@ export function registerRunCommand(program: Command): void {
 
         // 8. Finalize
         const status = result.exitCode === 0 ? 'completed' : 'failed';
-        updateRunFinished(db, run.id, status, result.exitCode);
+        updateRunFinished(db, run.id, status, result.exitCode, runCostUsd, runDurationSeconds);
         updateTaskStatus(db, task.id, status);
         heartbeat.stop();
         process.removeListener('SIGINT', cleanup);

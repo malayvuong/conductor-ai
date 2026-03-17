@@ -6,11 +6,16 @@ export function registerTasksCommand(program: Command): void {
   program
     .command('tasks')
     .description('List all tasks')
-    .action(async () => {
+    .option('--status <status>', 'Filter by status (created, running, completed, failed)')
+    .option('--engine <engine>', 'Filter by engine (claude, codex)')
+    .action(async (opts: { status?: string; engine?: string }) => {
       const db = getDb();
-      const tasks = listTasks(db);
+      const tasks = listTasks(db, {
+        status: opts.status,
+        engine: opts.engine,
+      });
       if (tasks.length === 0) {
-        console.log('No tasks yet.');
+        console.log('No tasks found.');
         return;
       }
       for (const t of tasks) {

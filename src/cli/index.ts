@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { registerRunCommand } from './commands/run.js';
+import { registerRunsCommand } from './commands/runs.js';
 import { registerTasksCommand } from './commands/tasks.js';
 import { registerLogsCommand } from './commands/logs.js';
 import { registerReportCommand } from './commands/report.js';
@@ -15,6 +16,7 @@ program
   .version('2026.3.17');
 
 registerRunCommand(program);
+registerRunsCommand(program);
 registerTasksCommand(program);
 registerLogsCommand(program);
 registerReportCommand(program);

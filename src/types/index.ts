@@ -29,6 +29,8 @@ export interface Run {
   finished_at: string | null;
   exit_code: number | null;
   resumed_from_run_id: string | null;
+  cost_usd: number | null;
+  duration_seconds: number | null;
 }
 
 export interface RunLog {

@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at TEXT,
   finished_at TEXT,
   exit_code INTEGER,
-  resumed_from_run_id TEXT REFERENCES runs(id)
+  resumed_from_run_id TEXT REFERENCES runs(id),
+  cost_usd REAL,
+  duration_seconds REAL
 );
 
 CREATE TABLE IF NOT EXISTS run_logs (
@@ -74,10 +76,15 @@ CREATE INDEX IF NOT EXISTS idx_run_reports_run_id ON run_reports(run_id);
  */
 export function migrateSchema(db: import('better-sqlite3').Database): void {
   migrateReportColumns(db);
-  // Add resumed_from_run_id to runs table
-  try {
-    db.exec('ALTER TABLE runs ADD COLUMN resumed_from_run_id TEXT REFERENCES runs(id)');
-  } catch { /* already exists */ }
+  // Add new columns to runs table
+  const runColumns = [
+    'resumed_from_run_id TEXT REFERENCES runs(id)',
+    'cost_usd REAL',
+    'duration_seconds REAL',
+  ];
+  for (const col of runColumns) {
+    try { db.exec(`ALTER TABLE runs ADD COLUMN ${col}`); } catch { /* already exists */ }
+  }
 }
 
 function migrateReportColumns(db: import('better-sqlite3').Database): void {
