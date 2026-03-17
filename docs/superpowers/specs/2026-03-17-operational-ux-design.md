@@ -53,11 +53,25 @@
 - `loop.ts` calls reporter at each state transition instead of scattered `log.info()`
 - Header printed once at goal start, footer once at goal end
 
+**Event types** (contract between loop.ts and reporter):
+
+```typescript
+type ProgressEvent =
+  | { type: 'goal_start'; session: string; goal: string }
+  | { type: 'wp_start'; wpIndex: number; wpTotal: number; title: string; attempt: number; strategy: string }
+  | { type: 'wp_progress'; wpIndex: number; wpTotal: number; detail: string }
+  | { type: 'wp_completed'; wpIndex: number; wpTotal: number }
+  | { type: 'wp_failed'; wpIndex: number; wpTotal: number; reason: string }
+  | { type: 'hard_blocker'; wpIndex: number; wpTotal: number; detail: string }
+  | { type: 'goal_end'; completed: number; total: number; attempts: number; cost: number };
+```
+
 **Not doing:**
 - No spinner/animation
 - No progress bar
 - No clear screen / overwrite lines
 - No color codes (plain text, works everywhere)
+- Suppress existing `process.stdout.write('.')` streaming dots — replaced by progress events
 
 ---
 
@@ -70,7 +84,8 @@
 **History changes (minimal):**
 - Add seq number before each goal
 - Add attempt count
-- Keep compact
+- Keep compact by default
+- `cdx session history --verbose` restores full detail (source, timestamps, snapshot summary) for debugging
 
 ```
 cdx session history
@@ -86,10 +101,10 @@ cdx inspect                          # full dump (existing behavior)
 cdx inspect --goal <N>               # single goal detail
 cdx inspect --goal <N> --attempts    # attempt timeline
 cdx inspect --goal <N> --snapshots   # snapshot chain
-cdx inspect --goal <N> --decisions   # decisions per snapshot
+cdx inspect --goal <N> --insights    # decisions + assumptions + questions + follow-ups + constraints
 ```
 
-**Goal lookup:** By seq number (1-based, ordered by created_at within session). Not by UUID.
+**Goal lookup:** By seq number (1-based, ordered by `created_at ASC, rowid ASC` within session for deterministic ordering). Not by UUID.
 
 **Display formats:**
 
@@ -119,13 +134,14 @@ Snap 2 (run_completed) — 2/5 WPs done
   Decisions: +1 new
 ```
 
-`--goal N --decisions`:
+`--goal N --insights` (decisions only in Wave 1, full insights after Wave 2):
 ```
 Goal 2: Implement CMS
 [Snap 1] decided to use PostgreSQL over SQLite
 [Snap 2] switched from REST to GraphQL for admin API
 [Snap 3] chose Zod for validation over Joi
 ```
+After Wave 2 lands, `--insights` also shows assumptions, open questions, follow-ups, constraints (see Section 5).
 
 **Architecture:**
 - Add options to inspect command in `session.ts`
@@ -145,11 +161,11 @@ Goal 2: Implement CMS
 **New commands:**
 
 ```bash
-cdx session current    # quick check: which session is active
+cdx session current        # quick check: which session is active
 cdx session switch <name>  # switch to another session
-cdx session pause      # pause current session + active goal
-cdx session resume     # resume most recent paused session
-cdx session close      # mark session completed, abandon unfinished goals
+cdx session pause          # pause current session + active goal
+cdx session resume [name]  # resume paused session (by name, or most recent)
+cdx session close          # close session, abandon unfinished goals
 ```
 
 **Output examples:**
@@ -170,6 +186,13 @@ cdx session resume
   ▶ Resumed: cms-project
     Continuing goal: Implement CMS (2/5 WPs done)
 
+cdx session resume
+  ▶ Resumed: cms-project
+    Continuing goal: Implement CMS (2/5 WPs done)
+
+cdx session resume api-refactor    # explicit name
+  ▶ Resumed: api-refactor
+
 cdx session close
   Session "cms-project" closed.
     Goals: 2 completed, 1 paused (→ abandoned)
@@ -182,21 +205,26 @@ cdx session close
 | `current` | read only | — | — |
 | `switch <name>` | target → active | target's paused goal stays as-is | current → paused |
 | `pause` | → paused | active goal → paused | — |
-| `resume` | → active | most recent paused/created goal → active | — |
-| `close` | → completed | unfinished goals → abandoned (with closeout) | — |
+| `resume [name]` | → active | most recent paused/created goal → active | — |
+| `close` | → abandoned (if unfinished goals) or completed (if all goals done) | unfinished goals → abandoned (with closeout) | — |
+
+**Edge cases:**
+- `switch` to a completed/abandoned session → error: "Session 'X' is completed. Use `cdx session start X` to reactivate."
+- `resume` with no paused sessions → error: "No paused session to resume."
+- `resume` uses `updated_at DESC` to pick most recent paused session (matches existing `getActiveSession` behavior)
+- `close` determines session status dynamically: if all goals are completed → session `completed`, otherwise → session `abandoned`
 
 **Key distinction:** `session resume` only reactivates session status. It does NOT start execution. User runs `cdx execute --until-done` separately. Clear separation: session management vs execution.
 
 **Architecture:**
 - 5 new actions in `session.ts`, each ~15-30 lines
-- `switch` reuses auto-pause logic from execute.ts — extract into shared function `pauseCurrentSession(db)`
 - `close` iterates goals, marks unfinished → abandoned, generates closeout for each
 - `current` is a quick alias — simpler than `status` (just name + status)
-- `resume` picks most recent session with status 'paused', then within that session picks most recent paused/created goal
+- `resume [name]` — if name given, find by name; otherwise pick most recent paused session (by `updated_at DESC`)
 
-**Shared function extraction:**
-- Extract from execute.ts: `pauseActiveGoal(db, session)` — reuse in switch and pause commands
-- Extract: `activateSession(db, sessionId)` — reuse in switch and resume
+**Shared function extraction** (two primitives reused across switch, pause, resume, execute):
+- `pauseCurrentSession(db, session)` — (1) pause active goal if unfinished, (2) set session status to paused. Used by: `switch`, `pause`
+- `activateSession(db, sessionId)` — set session status to active, set most recent paused/created goal as active_goal_id. Used by: `switch`, `resume`
 
 ---
 
@@ -212,7 +240,7 @@ cdx session close
 
 | Trigger | Threshold | Where shown |
 |---------|-----------|-------------|
-| Stale session | Idle > 7 days | `status`, `session list` |
+| Stale session | `now - session.updated_at` > 7 days | `status`, `session list` |
 | Too many paused goals | >= 3 paused | `status`, `execute` |
 
 **Display examples:**
@@ -276,7 +304,7 @@ At the end of your work, include these sections if applicable:
 **Extraction pipeline:**
 
 1. **Structured parse** (high confidence) — look for `## Assumptions Made`, `## Open Questions`, `## Follow-up Items`, `## Constraints Discovered` markdown sections
-2. **Pattern fallback** (lower confidence) — "assuming that...", "TODO:", "need to...", "question:", "unclear...", "constraint:", "limitation:"
+2. **Pattern fallback** (lower confidence, restricted to `summary`, `final_output`, `what_implemented` fields only — not raw code) — "assuming that...", "TODO:", "need to...", "question:", "unclear...", "constraint:", "limitation:"
 3. **Merge** with previous snapshot — deduplicate by content string
 4. **Store** in snapshot fields
 
@@ -289,6 +317,8 @@ ALTER TABLE snapshots ADD COLUMN follow_ups TEXT;            -- JSON: string[]
 ```
 
 `constraints` and `decisions` fields already exist.
+
+**Migration note:** Existing snapshots will have `null` for new fields. All display and merge code must handle null gracefully (already the pattern used for existing nullable snapshot fields).
 
 **Code changes:**
 
@@ -308,7 +338,7 @@ Section parsing first, pattern matching fallback. Same merge/dedup logic as deci
 
 **Inspect integration:**
 
-`--decisions` flag expanded to `--insights`:
+`--insights` flag (same flag from Wave 1, now shows full data):
 
 ```bash
 cdx inspect --goal 2 --insights
