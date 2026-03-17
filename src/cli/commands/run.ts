@@ -3,7 +3,7 @@ import { getDb } from '../../core/storage/db.js';
 import {
   createTask, updateTaskNormalized, updateTaskStatus,
   createRun, updateRunStarted, updateRunPid, updateRunFinished,
-  appendRunLog, createHeartbeat,
+  appendRunLog, saveReport, getRunLogs, getTaskById, createHeartbeat,
 } from '../../core/storage/repository.js';
 import { normalizeTask } from '../../core/task/normalizer.js';
 import { buildPrompt } from '../../core/prompt/builder.js';
@@ -11,6 +11,8 @@ import { getEngine } from '../../core/engine/types.js';
 import { runProcess } from '../../core/runner/process.js';
 import { HeartbeatMonitor } from '../../core/heartbeat/monitor.js';
 import { log } from '../../utils/logger.js';
+import { generateReport } from '../../core/report/generator.js';
+import type { Run, RunStatus } from '../../types/index.js';
 
 export function registerRunCommand(program: Command): void {
   program
@@ -113,6 +115,19 @@ export function registerRunCommand(program: Command): void {
         updateRunFinished(db, run.id, status, result.exitCode);
         updateTaskStatus(db, task.id, status);
         heartbeat.stop();
+
+        // Generate report
+        const allLogs = getRunLogs(db, run.id);
+        const updatedTask = getTaskById(db, task.id)!;
+        const updatedRun: Run = {
+          ...run,
+          status: status as RunStatus,
+          exit_code: result.exitCode,
+          finished_at: new Date().toISOString(),
+        };
+        const reportData = generateReport(updatedTask, updatedRun, allLogs);
+        saveReport(db, { run_id: run.id, ...reportData });
+        log.info(`Report saved. View with: conductor report ${run.id.slice(0, 8)}`);
 
         console.log('');
         log.info(`Run finished with exit code: ${result.exitCode}`);
