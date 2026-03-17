@@ -8,6 +8,7 @@ describe('parseClaudeStreamEvent', () => {
     });
     const result = parseClaudeStreamEvent(event);
     expect(result.display).toContain('claude-opus-4-6');
+    expect(result.display).toContain('[SYS]');
     expect(result.raw).toBe(event);
   });
 
@@ -27,18 +28,18 @@ describe('parseClaudeStreamEvent', () => {
       },
     });
     const result = parseClaudeStreamEvent(event);
-    expect(result.display).toBe('I found the bug in login.ts');
+    expect(result.display).toBe('[MSG] I found the bug in login.ts');
   });
 
   it('shows tool use from assistant message', () => {
     const event = JSON.stringify({
       type: 'assistant',
       message: {
-        content: [{ type: 'tool_use', name: 'Edit' }],
+        content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/app.ts' } }],
       },
     });
     const result = parseClaudeStreamEvent(event);
-    expect(result.display).toBe('[tool: Edit]');
+    expect(result.display).toBe('[TOOL] Edit: /tmp/app.ts');
   });
 
   it('silences rate limit events', () => {
@@ -56,11 +57,12 @@ describe('parseClaudeStreamEvent', () => {
     expect(result.display).toContain('success');
     expect(result.display).toContain('$0.0542');
     expect(result.display).toContain('12s');
+    expect(result.display).toContain('[DONE]');
   });
 
-  it('returns plain text for non-JSON lines', () => {
+  it('returns prefixed text for non-JSON lines', () => {
     const result = parseClaudeStreamEvent('just plain text output');
-    expect(result.display).toBe('just plain text output');
+    expect(result.display).toBe('[MSG] just plain text output');
     expect(result.raw).toBe('just plain text output');
   });
 });
