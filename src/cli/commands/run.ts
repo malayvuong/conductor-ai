@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
 import { getDb } from '../../core/storage/db.js';
 import {
   createTask, updateTaskNormalized, updateTaskStatus,
@@ -23,6 +24,19 @@ export function registerRunCommand(program: Command): void {
     .requiredOption('--task <task>', 'Task description')
     .action(async (opts) => {
       const db = getDb();
+
+      // Validate path exists
+      if (!fs.existsSync(opts.path)) {
+        log.error(`Workspace path does not exist: ${opts.path}`);
+        process.exit(1);
+      }
+
+      // Validate engine name
+      const validEngines = ['claude', 'codex'];
+      if (!validEngines.includes(opts.engine)) {
+        log.error(`Unknown engine: ${opts.engine}. Available: ${validEngines.join(', ')}`);
+        process.exit(1);
+      }
 
       // 1. Create task
       const task = createTask(db, {
@@ -96,6 +110,21 @@ export function registerRunCommand(program: Command): void {
       });
       heartbeat.start();
 
+      // Handle Ctrl+C gracefully
+      let childPid: number | undefined;
+      const cleanup = () => {
+        if (childPid) {
+          try { process.kill(childPid, 'SIGTERM'); } catch {}
+        }
+        heartbeat.stop();
+        updateRunFinished(db, run.id, 'failed', null);
+        updateTaskStatus(db, task.id, 'failed');
+        log.info('Run interrupted by user');
+        process.exit(130);
+      };
+      process.on('SIGINT', cleanup);
+      process.on('SIGTERM', cleanup);
+
       try {
         const result = await runProcess(command, {
           onLine: (stream, line) => {
@@ -105,6 +134,7 @@ export function registerRunCommand(program: Command): void {
             console.log(`${prefix}${line}`);
           },
           onPid: (pid) => {
+            childPid = pid;
             updateRunPid(db, run.id, pid);
             log.info(`Process started with PID: ${pid}`);
           },
@@ -115,6 +145,8 @@ export function registerRunCommand(program: Command): void {
         updateRunFinished(db, run.id, status, result.exitCode);
         updateTaskStatus(db, task.id, status);
         heartbeat.stop();
+        process.removeListener('SIGINT', cleanup);
+        process.removeListener('SIGTERM', cleanup);
 
         // Generate report
         const allLogs = getRunLogs(db, run.id);
