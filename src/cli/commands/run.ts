@@ -94,7 +94,14 @@ export function registerRunCommand(program: Command): void {
       updateTaskStatus(db, task.id, 'running');
       updateRunStarted(db, run.id);
 
+      // Log execution details
       log.info('Starting engine process...');
+      log.info(`  Engine:    ${opts.engine}`);
+      log.info(`  Command:   ${command.executable} ${command.args.filter(a => a !== (command as any).stdin && a.length < 60).join(' ')}`);
+      log.info(`  CWD:       ${opts.path}`);
+      log.info(`  Prompt:    ${promptFinal.length} chars`);
+      log.debug(`  Preview:   ${promptFinal.slice(0, 200).replace(/\n/g, '\\n')}...`);
+      appendRunLog(db, run.id, 'system', `engine=${opts.engine} cwd=${opts.path} prompt_len=${promptFinal.length}`);
       console.log('');
 
       // Start heartbeat
@@ -127,6 +134,7 @@ export function registerRunCommand(program: Command): void {
 
       try {
         const result = await runProcess(command, {
+          cwd: opts.path,
           onLine: (stream, line) => {
             appendRunLog(db, run.id, stream, line);
             heartbeat.recordOutput(line);

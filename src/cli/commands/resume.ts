@@ -87,6 +87,13 @@ export function registerResumeCommand(program: Command): void {
       updateTaskStatus(db, task.id, 'running');
       updateRunStarted(db, run.id);
 
+      // Log execution details
+      log.info(`  Engine:    ${task.engine}`);
+      log.info(`  Command:   ${command.executable}`);
+      log.info(`  CWD:       ${task.workspace_path}`);
+      log.info(`  Prompt:    ${resumePrompt.length} chars`);
+      appendRunLog(db, run.id, 'system', `engine=${task.engine} cwd=${task.workspace_path} prompt_len=${resumePrompt.length} resume=true`);
+
       const heartbeat = new HeartbeatMonitor({
         intervalMs: 15000,
         stuckThresholdSeconds: 60,
@@ -101,6 +108,7 @@ export function registerResumeCommand(program: Command): void {
 
       try {
         const result = await runProcess(command, {
+          cwd: task.workspace_path,
           onLine: (stream, line) => {
             appendRunLog(db, run.id, stream, line);
             heartbeat.recordOutput(line);
