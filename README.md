@@ -1,18 +1,18 @@
 # Conductor
 
-Supervisor for AI coding CLIs. Takes natural-language tasks, generates prompts, runs the selected engine, monitors progress, and produces structured reports.
+Supervisor for AI coding CLIs. Takes natural-language tasks, generates prompts, runs the selected engine, streams real-time logs, and produces structured reports.
 
 ```
 User
   |
   v
-conductor run --engine claude --path ./project --task "fix the login bug"
+cdx run --engine claude --path ./project --task "fix the login bug"
   |
   v
 Task Normalizer --> Prompt Builder --> Engine Adapter --> Process Runner
                                                               |
                                                               v
-                                                   Log Stream + Heartbeat
+                                                   Stream JSON + Heartbeat
                                                               |
                                                               v
                                                       Report Generator
@@ -34,43 +34,54 @@ Task Normalizer --> Prompt Builder --> Engine Adapter --> Process Runner
 git clone <repo-url> conductor
 cd conductor
 npm install
+npm run build
+npm link          # makes `cdx` available globally
 ```
 
 ## Quick Start
 
 ```bash
+# Set default workspace (optional, avoids --path every time)
+cdx set-path /path/to/project
+
 # Run a task
-npm run dev -- run --engine claude --path /path/to/project --task "fix the login bug"
+cdx run --engine claude --task "fix the login bug"
+
+# Run with explicit path (overrides default)
+cdx run --engine claude --path /other/project --task "fix the login bug"
 
 # View past tasks
-npm run dev -- tasks
+cdx tasks
 
 # View logs for a run
-npm run dev -- logs <runId>
+cdx logs <runId>
 
 # View the generated report
-npm run dev -- report <runId>
+cdx report <runId>
 
 # Resume a failed/incomplete task
-npm run dev -- resume <taskId>
+cdx resume <taskId>
+
+# Resume with a different task description
+cdx resume <taskId> --task "focus on the auth module only"
 ```
 
-Short IDs work everywhere -- you only need the first few characters (e.g. `logs a1b2c3`).
+Short IDs work everywhere -- you only need the first few characters (e.g. `cdx logs a1b2c3`).
 
 ## Commands
 
-### `conductor run`
+### `cdx run`
 
 Run a new task against a workspace.
 
 ```bash
-conductor run --engine <engine> --path <workspace> --task "<description>"
+cdx run --engine <engine> --path <workspace> --task "<description>"
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--engine` | Yes | `claude` or `codex` |
-| `--path` | Yes | Absolute path to the workspace |
+| `--engine` | No* | `claude` or `codex` (*required if no `defaultEngine` in config) |
+| `--path` | No* | Workspace path (*required if no default path set) |
 | `--task` | Yes | Natural-language task description |
 
 What happens:
@@ -78,18 +89,19 @@ What happens:
 2. Classifies the task type (`debug_fix`, `scan_review`, `implement_feature`, `verify_only`)
 3. Builds a prompt from the matching template
 4. Validates the engine executable exists
-5. Spawns the engine CLI process
-6. Streams stdout/stderr to terminal and saves every line to DB
-7. Monitors heartbeat every 15s, flags if no output for 60s+
-8. On completion, generates a structured report
-9. Handles Ctrl+C gracefully
+5. Pipes the prompt to the engine via stdin
+6. Streams real-time JSON events from the engine, parsing and displaying as they arrive
+7. Persists every event (raw JSON) to the database for later inspection
+8. Monitors heartbeat — warns once if no output for 60s+, detects recovery
+9. On completion, generates a structured report
+10. Handles Ctrl+C gracefully
 
-### `conductor tasks`
+### `cdx tasks`
 
 List all tasks with their status.
 
 ```bash
-conductor tasks
+cdx tasks
 ```
 
 ```
@@ -97,33 +109,74 @@ conductor tasks
 [e5f6g7h8] failed     codex    review all API endpoints
 ```
 
-### `conductor logs <runId>`
+### `cdx logs <runId>`
 
 View saved logs for a run.
 
 ```bash
-conductor logs <runId>
-conductor logs <runId> --tail 20        # last 20 lines
-conductor logs <runId> --stream stderr  # only stderr
+cdx logs <runId>
+cdx logs <runId> --tail 20        # last 20 lines
+cdx logs <runId> --stream stderr  # only stderr
 ```
 
-### `conductor report <runId>`
+### `cdx report <runId>`
 
 View the structured report generated after a run.
 
 ```bash
-conductor report <runId>
+cdx report <runId>
 ```
 
 Shows: summary, root cause, fix applied, files changed, verification notes, remaining risks.
 
-### `conductor resume <taskId>`
+### `cdx resume <taskId>`
 
 Create a new run for an existing task, injecting context from the previous run (report summary + last 20 log lines) into the prompt.
 
 ```bash
-conductor resume <taskId>
+cdx resume <taskId>
+cdx resume <taskId> --task "new instructions for this attempt"
 ```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--task` | No | Override the task description for this run |
+
+### `cdx set-path <path>`
+
+Set the default workspace path. Saved to `~/.conductor/config.json`.
+
+```bash
+cdx set-path /Users/me/projects/my-app
+```
+
+### `cdx get-path`
+
+Show the current default workspace path.
+
+### `cdx clear-path`
+
+Remove the saved default workspace path.
+
+## Configuration
+
+Persistent config is stored at `~/.conductor/config.json`:
+
+```json
+{
+  "defaultPath": "/Users/me/projects/my-app",
+  "defaultEngine": "claude",
+  "heartbeatIntervalSec": 15,
+  "stuckThresholdSec": 60
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `defaultPath` | — | Workspace path used when `--path` is omitted |
+| `defaultEngine` | — | Engine used when `--engine` is omitted |
+| `heartbeatIntervalSec` | 15 | Seconds between heartbeat checks |
+| `stuckThresholdSec` | 60 | Seconds of no output before warning |
 
 ## Task Classification
 
@@ -158,14 +211,24 @@ prompts/
 
 Edit these files to customize what gets sent to each engine.
 
+## Streaming
+
+The Claude adapter uses `--output-format stream-json --verbose` to stream real-time JSONL events as Claude works. Each event is:
+
+- Persisted as raw JSON in `run_logs` for full traceability
+- Parsed for terminal display (assistant text, tool calls, results)
+- Fed to the heartbeat monitor so it knows the engine is alive
+
+This means logs are captured **continuously** during a run, not just at the end. You can inspect them in real-time or after the fact with `cdx logs <runId>`.
+
 ## Data Storage
 
 All data is stored locally in SQLite at `data/conductor.db`:
 
 - **tasks** -- input, workspace, engine, classification, status
 - **runs** -- command, prompt, PID, exit code, timestamps
-- **run_logs** -- every stdout/stderr line, sequenced
-- **heartbeat_events** -- periodic health checks (alive/idle/stuck)
+- **run_logs** -- every stdout/stderr/system line, sequenced (raw JSON for streaming engines)
+- **heartbeat_events** -- periodic health checks (alive/idle/suspected_stuck/recovered)
 - **run_reports** -- structured post-run analysis
 
 The database is created automatically on first run.
@@ -182,15 +245,18 @@ conductor/
         logs.ts         # View run logs
         report.ts       # View run reports
         resume.ts       # Resume previous task
+        config.ts       # set-path, get-path, clear-path
     core/
+      config/service.ts     # ~/.conductor/config.json read/write
       task/normalizer.ts    # Keyword-based task classification
       prompt/builder.ts     # Template loading + variable substitution
       engine/
         types.ts            # EngineAdapter interface + factory
-        claude.ts           # Claude CLI adapter
+        claude.ts           # Claude CLI adapter (stream-json)
         codex.ts            # Codex CLI adapter
-      runner/process.ts     # child_process.spawn wrapper
-      heartbeat/monitor.ts  # Periodic output monitoring
+        stream-parser.ts    # JSON event parser for streaming engines
+      runner/process.ts     # child_process.spawn wrapper (stdin pipe)
+      heartbeat/monitor.ts  # State-tracked output monitoring
       report/generator.ts   # Post-run report extraction
       storage/
         schema.ts           # SQL DDL
@@ -201,7 +267,7 @@ conductor/
       logger.ts             # Timestamped console logger
       lookup.ts             # Short-ID prefix resolution
   prompts/                  # Prompt templates per engine/task type
-  data/                     # SQLite DB + logs (gitignored)
+  data/                     # SQLite DB (gitignored)
   tests/                    # Vitest test suite
 ```
 
@@ -209,9 +275,10 @@ conductor/
 
 ```bash
 npm run dev -- <command>     # Run CLI in dev mode (tsx)
-npm test                     # Run all tests
+npm test                     # Run all tests (51 tests)
 npm run test:watch           # Watch mode
 npm run build                # Compile TypeScript to dist/
+npm link                     # Link cdx command globally
 ```
 
 ## Tech Stack
@@ -220,7 +287,7 @@ npm run build                # Compile TypeScript to dist/
 - **CLI:** commander
 - **Validation:** zod
 - **Database:** better-sqlite3
-- **Process:** child_process.spawn
+- **Process:** child_process.spawn with stdin pipe
 - **Tests:** vitest
 
 ## License

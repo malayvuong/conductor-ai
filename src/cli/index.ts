@@ -12,7 +12,7 @@ const program = new Command();
 program
   .name('cdx')
   .description('Supervisor for AI coding CLIs')
-  .version('0.1.0');
+  .version('2026.3.17');
 
 registerRunCommand(program);
 registerTasksCommand(program);

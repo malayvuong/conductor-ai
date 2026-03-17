@@ -1,6 +1,6 @@
 {
   "name": "conductor",
-  "version": "0.1.0",
+  "version": "2026.3.17",
   "description": "Supervisor for AI coding CLIs",
   "type": "module",
   "main": "dist/cli/index.js",
