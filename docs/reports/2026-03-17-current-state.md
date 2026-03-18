@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-18
 **Version:** 2026.3.18
-**Codebase:** ~6,100 lines source / ~4,200 lines tests / 288 test cases / 28 test files
+**Codebase:** ~6,200 lines source / ~4,500 lines tests / 299 test cases / 29 test files
 
 ---
 
@@ -15,6 +15,7 @@ Supervisor Layer:
 - `cdx execute plan.md --until-done` — plan mode with WP decomposition
 - `cdx execute "task description" --until-done` — no-plan mode with evidence-based completion
 - Resume after interruption: Ctrl+C pauses session/goal, next `cdx execute --until-done` resumes
+- Transactional finalization: goal + session + closeout written atomically, SIGINT-safe completion
 - Goal lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 - Auto-pause old goal when starting new task mid-session
 - Closeout summary per goal (files, decisions, blockers, next action)
@@ -44,7 +45,7 @@ Execution Layer (stable):
 - Heartbeat monitoring (state-tracked, no spam)
 - Task-type-aware structured report generation
 - Resume with curated context from best previous run
-- 288 tests pass across 28 test files
+- 299 tests pass across 29 test files
 
 **What is partially implemented:**
 - `cdx logs` shows raw JSON lines for Claude runs (not parsed human-readable text)
@@ -115,6 +116,9 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 ### Session Hygiene
 **Status: Working.** Pure function guardrails: `checkStaleSession()` warns after 7 days idle, `checkPausedGoals()` warns at 3+ paused goals. Injected into status display. Passive warnings only — never blocks execution.
 
+### State Consistency & Finalization
+**Status: Fixed (was P0 bug).** Transactional finalization ensures goal + session + closeout are written atomically via `db.transaction()`. SIGINT race condition fixed: completion check runs at end of loop body (after WP update) AND in the interrupt path, preventing the scenario where all WPs complete but goal/session are incorrectly set to 'paused'. `persistCloseout()` now propagates errors instead of silently swallowing them. 11 regression tests cover all finalization paths.
+
 ### Closeout Summary
 **Status: Working.** Generated at every terminal state (completed, failed, hard_blocked, abandoned). Structured JSON with: source, objective, final status, attempt/WP counts, files touched, key decisions, blockers, next recommended action, cost estimate.
 
@@ -159,7 +163,8 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 | Log retrieval | Not ready | `cdx logs` shows raw JSON, not parsed text |
 | Reporting | Ready | Task-type-aware extraction, no hallucination |
 | Resume | Ready | Quality-rated context, run linkage |
-| Persistence | Ready | All entities, auto-migrations, WAL mode |
+| Persistence | Ready | All entities, auto-migrations, WAL mode, transactional finalization |
+| State consistency | Ready (fixed) | SIGINT-safe completion, atomic goal+session+closeout writes, 11 regression tests |
 | Configuration | Ready | `cdx config` set/get/show/unset, engine resolution chain, `cdx doctor` |
 | Live heartbeat | Ready | Real-time file/tool tracking, stall detection, visible in status/inspect |
 
@@ -175,7 +180,7 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 
 2. **End-to-end validation with real engines** — Run full supervisor loop with Claude, verify WP advancement, snapshot quality, and closeout generation.
 
-3. **Wrap multi-step DB operations in transactions** — Goal creation + WP creation should be atomic.
+3. ~~**Wrap multi-step DB operations in transactions**~~ — Done. Goal finalization (status + closeout) now uses `db.transaction()`. Goal creation + WP creation still non-transactional (low risk, single-user CLI).
 
 ### P2 — Enhancements
 
@@ -205,7 +210,7 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 | src/cli/commands/config.ts | Config commands (set/get/show/unset + legacy aliases) |
 | src/cli/commands/doctor.ts | Environment diagnostic command |
 | **Supervisor** | |
-| src/core/supervisor/loop.ts | Main supervisor loop (until-done) with progress events |
+| src/core/supervisor/loop.ts | Main supervisor loop (transactional finalization, SIGINT-safe, progress events) |
 | src/core/supervisor/scheduler.ts | WP scheduling + status counting |
 | src/core/supervisor/plan-parser.ts | Markdown plan → WP decomposition |
 | src/core/supervisor/prompt-builder.ts | Supervisor prompt (plan + ad-hoc modes) + insight instructions |
@@ -240,7 +245,7 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 | src/types/supervisor.ts | Supervisor layer types (incl. enhanced Snapshot) |
 | src/core/engine/types.ts | Adapter interface + factory + getAvailableEngines() |
 | **Tests** | |
-| tests/ (28 files) | 288 test cases |
+| tests/ (29 files) | 299 test cases |
 | prompts/ (8 files) | Prompt templates |
 
 ---
@@ -267,5 +272,6 @@ Lifecycle: created → active → paused/completed/failed/hard_blocked/abandoned
 | Session hygiene | None | Passive warnings for stale sessions and paused goal accumulation |
 | Prompt strategy | Static | Escalation: normal → focused → surgical → recovery |
 | DB tables | 5 (tasks, runs, logs, heartbeats, reports) | 10 (+ sessions, goals, work_packages, snapshots, execution_attempts) |
-| Source lines | ~1,700 | ~6,100 |
-| Test cases | 114 across 14 files | 288 across 28 files |
+| State consistency | None | Transactional finalization, SIGINT-safe completion, 11 regression tests |
+| Source lines | ~1,700 | ~6,200 |
+| Test cases | 114 across 14 files | 299 across 29 files |

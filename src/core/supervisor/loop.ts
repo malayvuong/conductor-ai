@@ -12,7 +12,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import type { Session, Goal, Snapshot, PromptStrategy } from '../../types/supervisor.js';
+import type { Session, Goal, Snapshot, PromptStrategy, WorkPackage } from '../../types/supervisor.js';
 import type { Run, RunStatus } from '../../types/index.js';
 import { selectNextWP, allWPsCompleted, allWPsTerminal, countWPsByStatus } from './scheduler.js';
 import { buildGoalPrompt } from './prompt-builder.js';
@@ -51,6 +51,69 @@ export interface ExecuteGoalResult {
   message: string;
 }
 
+// ---- Goal finalization (transactional) ----
+
+/**
+ * Atomically finalize a goal as completed.
+ * Wraps all status updates + closeout in a single transaction
+ * so partial writes cannot leave inconsistent state.
+ */
+function finalizeGoalCompleted(
+  db: Database.Database,
+  goal: Goal,
+  session: Session,
+  wps: WorkPackage[],
+  totalCost: number,
+  totalAttempts: number,
+): ExecuteGoalResult {
+  const counts = countWPsByStatus(wps);
+
+  const commit = db.transaction(() => {
+    updateGoalStatus(db, goal.id, 'completed');
+    updateSessionStatus(db, session.id, 'completed');
+    // Closeout: inline to keep in transaction — errors must propagate
+    const updatedGoal = getGoalById(db, goal.id)!;
+    const attempts = getAttemptsByGoal(db, goal.id);
+    const snapshots = getSnapshotsByGoal(db, goal.id);
+    const closeout = buildCloseoutSummary({ goal: updatedGoal, wps, attempts, snapshots, totalCost });
+    updateGoalCloseout(db, goal.id, JSON.stringify(closeout));
+  });
+  commit();
+
+  emit({ type: 'goal_end', completed: counts.completed || 0, total: wps.length, attempts: totalAttempts, cost: totalCost });
+
+  return {
+    status: 'completed',
+    totalAttempts,
+    totalCost,
+    message: `Goal completed. ${counts.completed || 0} WPs done.`,
+  };
+}
+
+function finalizeGoalFailed(
+  db: Database.Database,
+  goal: Goal,
+  session: Session,
+  status: 'failed' | 'hard_blocked',
+  totalCost: number,
+  totalAttempts: number,
+  message: string,
+): ExecuteGoalResult {
+  const commit = db.transaction(() => {
+    updateGoalStatus(db, goal.id, status);
+    updateSessionStatus(db, session.id, 'paused');
+    persistCloseout(db, goal, totalCost);
+  });
+  commit();
+
+  return {
+    status: status === 'failed' ? 'exhausted' : 'hard_blocked',
+    totalAttempts,
+    totalCost,
+    message,
+  };
+}
+
 /**
  * Execute a goal until done, hard-blocked, or exhausted.
  */
@@ -83,43 +146,21 @@ export async function executeGoal(
 
       // 2. Check: all WPs completed?
       if (allWPsCompleted(wps)) {
-        updateGoalStatus(db, goal.id, 'completed');
-        updateSessionStatus(db, session.id, 'completed');
-        persistCloseout(db, goal, totalCost);
-        const counts = countWPsByStatus(wps);
-        emit({ type: 'goal_end', completed: counts.completed || 0, total: wps.length, attempts: totalAttempts, cost: totalCost });
-        return {
-          status: 'completed',
-          totalAttempts,
-          totalCost,
-          message: `Goal completed. ${counts.completed || 0} WPs done.`,
-        };
+        return finalizeGoalCompleted(db, goal, session, wps, totalCost, totalAttempts);
       }
 
       // 3. Check: all WPs in terminal state but not all completed?
       if (allWPsTerminal(wps)) {
-        updateGoalStatus(db, goal.id, 'failed');
-        persistCloseout(db, goal, totalCost);
         const counts = countWPsByStatus(wps);
-        return {
-          status: 'exhausted',
-          totalAttempts,
-          totalCost,
-          message: `All WPs exhausted. Completed: ${counts.completed || 0}, Failed: ${counts.failed || 0}, Blocked: ${counts.blocked || 0}`,
-        };
+        return finalizeGoalFailed(db, goal, session, 'failed', totalCost, totalAttempts,
+          `All WPs exhausted. Completed: ${counts.completed || 0}, Failed: ${counts.failed || 0}, Blocked: ${counts.blocked || 0}`);
       }
 
       // 4. Select next WP
       const wp = selectNextWP(wps);
       if (!wp) {
-        updateGoalStatus(db, goal.id, 'hard_blocked');
-        persistCloseout(db, goal, totalCost);
-        return {
-          status: 'hard_blocked',
-          totalAttempts,
-          totalCost,
-          message: 'No available WP to execute. All remaining WPs are blocked or dependencies not met.',
-        };
+        return finalizeGoalFailed(db, goal, session, 'hard_blocked', totalCost, totalAttempts,
+          'No available WP to execute. All remaining WPs are blocked or dependencies not met.');
       }
 
       // 5. Determine strategy based on retry count
@@ -152,6 +193,8 @@ export async function executeGoal(
       });
 
       // 10. Execute engine (delegates to existing execution layer)
+      // NOTE: SIGINT may fire during this await. After it returns,
+      // we MUST still persist WP results before checking interrupted.
       const runResult = await executeEngineRun(db, session, goal, wp, prompt, config, {
         wpIndex, wpTotal: wps.length, strategy,
       });
@@ -175,14 +218,8 @@ export async function executeGoal(
         updateWPBlocker(db, wp.id, 'hard', hardBlocker.detail);
         updateWPStatus(db, wp.id, 'blocked');
         emit({ type: 'hard_blocker', wpIndex: wps.findIndex(w => w.id === wp.id) + 1, wpTotal: wps.length, detail: hardBlocker.detail });
-        updateGoalStatus(db, goal.id, 'hard_blocked');
-        persistCloseout(db, goal, totalCost);
-        return {
-          status: 'hard_blocked',
-          totalAttempts,
-          totalCost,
-          message: `Hard blocker on "${wp.title}": ${hardBlocker.detail}`,
-        };
+        return finalizeGoalFailed(db, goal, session, 'hard_blocked', totalCost, totalAttempts,
+          `Hard blocker on "${wp.title}": ${hardBlocker.detail}`);
       }
 
       // 13. Update attempt
@@ -236,11 +273,35 @@ export async function executeGoal(
       updateSessionSummary(db, session.id,
         `${counts.completed || 0}/${updatedWPs.length} WPs completed. Last: ${wp.title} (${strategy}). Cost: $${totalCost.toFixed(4)}`
       );
+
+      // 17. CRITICAL: Check completion BEFORE looping back to while(!interrupted).
+      //     This prevents the SIGINT race where all WPs are done but the
+      //     interrupted flag causes the loop to exit without finalizing.
+      if (allWPsCompleted(updatedWPs)) {
+        return finalizeGoalCompleted(db, goal, session, updatedWPs, totalCost, totalAttempts);
+      }
+
+      if (allWPsTerminal(updatedWPs)) {
+        return finalizeGoalFailed(db, goal, session, 'failed', totalCost, totalAttempts,
+          `All WPs exhausted. Completed: ${counts.completed || 0}, Failed: ${counts.failed || 0}, Blocked: ${counts.blocked || 0}`);
+      }
     }
 
-    // Interrupted by user — pause both goal and session
-    updateGoalStatus(db, goal.id, 'paused');
-    updateSessionStatus(db, session.id, 'paused');
+    // Interrupted by user — but check if goal actually completed first.
+    // This is the safety net: if SIGINT fired between step 17 and the
+    // while check, the goal may already be done.
+    const finalWPs = getWPsByGoal(db, goal.id);
+    if (allWPsCompleted(finalWPs)) {
+      return finalizeGoalCompleted(db, goal, session, finalWPs, totalCost, totalAttempts);
+    }
+
+    // Truly interrupted with work remaining
+    const commit = db.transaction(() => {
+      updateGoalStatus(db, goal.id, 'paused');
+      updateSessionStatus(db, session.id, 'paused');
+    });
+    commit();
+
     return {
       status: 'interrupted',
       totalAttempts,
@@ -425,14 +486,10 @@ function mapGoalTypeToTaskType(goalType: string | null): string | null {
 }
 
 function persistCloseout(db: Database.Database, goal: Goal, totalCost: number): void {
-  try {
-    const updatedGoal = getGoalById(db, goal.id)!;
-    const wps = getWPsByGoal(db, goal.id);
-    const attempts = getAttemptsByGoal(db, goal.id);
-    const snapshots = getSnapshotsByGoal(db, goal.id);
-    const closeout = buildCloseoutSummary({ goal: updatedGoal, wps, attempts, snapshots, totalCost });
-    updateGoalCloseout(db, goal.id, JSON.stringify(closeout));
-  } catch (err: any) {
-    log.error(`Failed to generate closeout: ${err.message}`);
-  }
+  const updatedGoal = getGoalById(db, goal.id)!;
+  const wps = getWPsByGoal(db, goal.id);
+  const attempts = getAttemptsByGoal(db, goal.id);
+  const snapshots = getSnapshotsByGoal(db, goal.id);
+  const closeout = buildCloseoutSummary({ goal: updatedGoal, wps, attempts, snapshots, totalCost });
+  updateGoalCloseout(db, goal.id, JSON.stringify(closeout));
 }

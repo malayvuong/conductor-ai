@@ -331,7 +331,8 @@ The supervisor loop (`cdx execute ... --until-done`) works as follows:
 5. **Evaluate** — Parse report, detect progress, check WP completion.
 6. **Snapshot** — Capture state (completed items, in-progress, remaining, decisions, files, blockers) for next run's context.
 7. **Advance or retry** — Complete WP → next WP. No progress → retry with escalated prompt strategy. Exhausted retries → mark failed.
-8. **Loop** until all WPs done or hard-blocked.
+8. **Finalize check** — After each WP result, immediately check if all WPs are done. If yes, finalize atomically (goal + session + closeout in one transaction). This prevents the SIGINT race where Ctrl+C during the last engine run could leave stale state.
+9. **Loop** until all WPs done or hard-blocked.
 
 **Prompt strategy escalation:** normal → focused → surgical → recovery (based on retry count).
 
@@ -340,6 +341,15 @@ The supervisor loop (`cdx execute ... --until-done`) works as follows:
 **Goal lifecycle:** created → active → paused/completed/failed/hard_blocked/abandoned.
 
 **Closeout summary:** Generated at every terminal state with objective, files touched, decisions, blockers, and next recommended action.
+
+### State Consistency Guarantees
+
+The supervisor loop ensures that DB state is always consistent with execution reality:
+
+- **Transactional finalization** — Goal status + session status + closeout summary are written in a single SQLite transaction. No partial writes possible.
+- **SIGINT-safe completion** — After each WP completes, the loop checks for goal completion _before_ checking the interrupted flag. If Ctrl+C fires during the last engine run, the goal still finalizes as completed.
+- **Interrupt safety net** — The interrupt path also checks if all WPs are actually done before marking as paused. If the goal completed, it finalizes correctly regardless of interrupt timing.
+- **No silent error swallowing** — Closeout generation errors propagate rather than being silently logged.
 
 ### Live Progress During Execution
 
@@ -424,7 +434,7 @@ conductor/
     core/
       config/service.ts               # Config read/write, resolveEngine(), key aliases
       supervisor/
-        loop.ts                       # Main supervisor loop (until-done)
+        loop.ts                       # Main supervisor loop (transactional finalization, SIGINT-safe)
         scheduler.ts                  # WP scheduling, status counting
         plan-parser.ts                # Markdown plan → WP decomposition
         prompt-builder.ts             # Supervisor prompt (plan + ad-hoc)
@@ -461,14 +471,14 @@ conductor/
       lookup.ts                       # Short-ID prefix resolution
   prompts/                            # Prompt templates per engine/task type
   data/                               # SQLite DB (gitignored)
-  tests/                              # Vitest test suite (288 tests, 28 files)
+  tests/                              # Vitest test suite (299 tests, 29 files)
 ```
 
 ## Development
 
 ```bash
 npm run dev -- <command>     # Run CLI in dev mode (tsx)
-npm test                     # Run all tests (288 tests)
+npm test                     # Run all tests (299 tests)
 npm run test:watch           # Watch mode
 npm run build                # Compile TypeScript to dist/
 npm link                     # Link cdx command globally
