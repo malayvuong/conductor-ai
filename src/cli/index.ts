@@ -17,7 +17,7 @@ const program = new Command();
 program
   .name('cdx')
   .description('Autonomous execution supervisor for AI coding CLIs')
-  .version('2026.03.0');
+  .version('2026.03.1');
 
 // Session-first commands (primary UX)
 registerSessionCommand(program);

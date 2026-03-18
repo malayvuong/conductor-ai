@@ -1,6 +1,6 @@
 {
   "name": "@malayvuong/conductor-ai",
-  "version": "2026.03.0",
+  "version": "2026.03.1",
   "description": "Autonomous execution supervisor for AI coding CLIs",
   "keywords": [
     "ai",
@@ -11,13 +11,13 @@
     "automation",
     "orchestration"
   ],
-  "homepage": "https://github.com/nicepkg/conductor#readme",
+  "homepage": "https://github.com/malayvuong/conductor-ai#readme",
   "bugs": {
-    "url": "https://github.com/nicepkg/conductor/issues"
+    "url": "https://github.com/malayvuong/conductor-ai/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nicepkg/conductor.git"
+    "url": "git+https://github.com/malayvuong/conductor-ai.git"
   },
   "license": "MIT",
   "author": "Nguyen Minh Vuong",
