@@ -241,7 +241,19 @@ export async function executeGoal(
         emit({ type: 'wp_completed', wpIndex, wpTotal: wps.length });
       } else if (progress.hasProgress) {
         updateWPProgress(db, wp.id);
-        emit({ type: 'wp_progress', wpIndex, wpTotal: wps.length, detail: progress.indicators.join(', ') });
+        // Progress detected but not completion — still counts as an attempt.
+        // Without this, a WP that keeps producing progress signals but never
+        // passes isWPCompleted will spin forever (retry_count stays 0,
+        // WP stays active, selectNextWP always re-selects it).
+        incrementWPRetry(db, wp.id);
+        const updatedWP = getWPById(db, wp.id)!;
+        if (updatedWP.retry_count >= updatedWP.retry_budget) {
+          updateWPStatus(db, wp.id, 'failed');
+          updateWPBlocker(db, wp.id, 'soft', 'Retry budget exhausted — progress detected but completion criteria not met');
+          emit({ type: 'wp_failed', wpIndex, wpTotal: wps.length, reason: 'progress but not completed, retries exhausted' });
+        } else {
+          emit({ type: 'wp_progress', wpIndex, wpTotal: wps.length, detail: progress.indicators.join(', ') });
+        }
       } else {
         incrementWPRetry(db, wp.id);
         const updatedWP = getWPById(db, wp.id)!;
