@@ -9,8 +9,9 @@ export class CodexAdapter implements EngineAdapter {
     return {
       executable: 'codex',
       args: [
-        '--quiet',
-        '--auto-edit',
+        'exec',
+        '--full-auto',
+        '-C', input.workspacePath,
       ],
       env: {},
       stdin: input.prompt,
